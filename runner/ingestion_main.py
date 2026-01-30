@@ -71,6 +71,7 @@ def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> s
     from core.storage.artifacts import ArtifactLayout
     from runner.data_assets import DbAssetIndexer, SqlInventoryExtractor
     from runner.depgraph import DepGraphExtractor
+    from runner.evidence import GitHubEvidenceFetcher
     from runner.exec_matrix import ExecMatrixBuilder
     from runner.exec_probe import ExecProbeRunner
     from runner.indexer import RepoIndexer, ScopeClassifier
@@ -134,6 +135,15 @@ def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> s
     sql_inventory_path = layout.run_dir(run.run_id) / "data" / "sql_inventory.json"
     sql_inventory_path.write_text(
         sql_inventory.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+    evidence_fetcher = GitHubEvidenceFetcher(layout.run_dir(run.run_id) / "evidence")
+    evidence_index = evidence_fetcher.fetch(repo_url)
+    evidence_index_path = (
+        layout.run_dir(run.run_id) / "evidence" / "evidence_index.json"
+    )
+    evidence_index_path.write_text(
+        evidence_index.model_dump_json(indent=2), encoding="utf-8"
     )
     run = repo.update_status(run, RunStatus.DONE)
     return run.run_id
