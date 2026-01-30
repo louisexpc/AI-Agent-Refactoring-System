@@ -69,6 +69,8 @@ class RunRepository:
 def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> str:
     ensure_repo_root_on_path()
     from core.storage.artifacts import ArtifactLayout
+    from runner.exec_matrix import ExecMatrixBuilder
+    from runner.exec_probe import ExecProbeRunner
     from runner.indexer import RepoIndexer, ScopeClassifier
     from runner.snapshot import Snapshotter
     from shared.ingestion_types import RunStatus
@@ -99,6 +101,21 @@ def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> s
     )
     run = run.model_copy(update={"scopes": scopes})
     repo._write_run(run)
+
+    coverage_dir = layout.run_dir(run.run_id) / "coverage"
+    exec_builder = ExecMatrixBuilder(coverage_dir=coverage_dir)
+    exec_matrix = exec_builder.build(scopes)
+    probe_runner = ExecProbeRunner(
+        repo_dir=snapshot_result.repo_dir,
+        logs_dir=layout.run_dir(run.run_id) / "logs" / "exec_probe",
+        coverage_dir=coverage_dir,
+    )
+    try:
+        exec_matrix = probe_runner.run(exec_matrix)
+    except Exception:
+        exec_matrix = exec_matrix
+    exec_matrix_path = layout.run_dir(run.run_id) / "exec" / "exec_matrix.json"
+    exec_matrix_path.write_text(exec_matrix.model_dump_json(indent=2), encoding="utf-8")
     run = repo.update_status(run, RunStatus.DONE)
     return run.run_id
 
