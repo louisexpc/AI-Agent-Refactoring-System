@@ -32,7 +32,7 @@
 
 ## Indexing
 
-- index/repo_index.json → RepoIndex
+- index/repo_index.json → RepoIndex (TBD)
 - index/scope_candidates.json → ScopeCandidates (list[ScopeCandidate])
 
 ## Execution

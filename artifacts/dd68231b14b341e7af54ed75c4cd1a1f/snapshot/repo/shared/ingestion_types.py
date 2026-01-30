@@ -135,21 +135,6 @@ class RepoMeta(BaseModel):
     created_at: datetime
 
 
-class FileEntry(BaseModel):
-    path: str
-    ext: str | None = None
-    bytes: int
-    sha1: str
-
-
-class RepoIndex(BaseModel):
-    root: str = "."
-    file_count: int
-    total_bytes: int
-    files: list[FileEntry] = Field(default_factory=list)
-    indicators: list[str] = Field(default_factory=list)
-
-
 class RunRecord(BaseModel):
     run_id: str
     repo_url: str

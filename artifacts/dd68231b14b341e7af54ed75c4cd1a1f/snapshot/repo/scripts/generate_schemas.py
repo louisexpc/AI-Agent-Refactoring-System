@@ -8,7 +8,6 @@ from shared.ingestion_types import (
     DepGraphL0,
     EvidenceIndex,
     ExecMatrix,
-    RepoIndex,
     RepoMeta,
     RunRecord,
     ScopeCandidate,
@@ -23,7 +22,6 @@ def main() -> None:
     models = {
         "RunRecord": RunRecord,
         "RepoMeta": RepoMeta,
-        "RepoIndex": RepoIndex,
         "ScopeCandidate": ScopeCandidate,
         "ExecMatrix": ExecMatrix,
         "DepGraphL0": DepGraphL0,

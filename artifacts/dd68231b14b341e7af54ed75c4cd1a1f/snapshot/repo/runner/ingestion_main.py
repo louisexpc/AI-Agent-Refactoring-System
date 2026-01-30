@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -69,7 +68,6 @@ class RunRepository:
 def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> str:
     ensure_repo_root_on_path()
     from core.storage.artifacts import ArtifactLayout
-    from runner.indexer import RepoIndexer, ScopeClassifier
     from runner.snapshot import Snapshotter
     from shared.ingestion_types import RunStatus
 
@@ -85,20 +83,6 @@ def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> s
         snapshot_result.meta.model_dump_json(indent=2), encoding="utf-8"
     )
     run = repo.update_commit(run, snapshot_result.meta.commit_sha)
-
-    indexer = RepoIndexer(snapshot_result.repo_dir)
-    repo_index = indexer.build_index()
-    repo_index_path = layout.run_dir(run.run_id) / "index" / "repo_index.json"
-    repo_index_path.write_text(repo_index.model_dump_json(indent=2), encoding="utf-8")
-    classifier = ScopeClassifier(snapshot_result.repo_dir)
-    scopes = classifier.classify(repo_index)
-    scope_path = layout.run_dir(run.run_id) / "index" / "scope_candidates.json"
-    scope_payload = [scope.model_dump() for scope in scopes]
-    scope_path.write_text(
-        json.dumps(scope_payload, indent=2, sort_keys=True), encoding="utf-8"
-    )
-    run = run.model_copy(update={"scopes": scopes})
-    repo._write_run(run)
     run = repo.update_status(run, RunStatus.DONE)
     return run.run_id
 

@@ -1,0 +1,10 @@
+[
+  {
+    "build_tool": "uv",
+    "language": "python",
+    "risk_flags": [],
+    "root_path": ".",
+    "scope_id": "scope-root",
+    "test_tool": null
+  }
+]
