@@ -25,9 +25,23 @@ IMPORT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 
 @dataclass
 class DepGraphExtractor:
+    """建置 L0 依賴圖（lexical import/include）。
+
+    Args:
+        repo_dir: snapshot repo 的根目錄。
+    """
+
     repo_dir: Path
 
     def build(self, repo_index: RepoIndex) -> DepGraphL0:
+        """從 repo_index 掃描 import/include 並輸出依賴邊。
+
+        Args:
+            repo_index: RepoIndexer 產出的索引資料。
+
+        Returns:
+            L0 依賴圖 `DepGraphL0`。
+        """
         nodes: list[DepNode] = []
         edges: list[DepEdge] = []
         seen_edges: set[tuple[str, str]] = set()

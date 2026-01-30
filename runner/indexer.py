@@ -27,9 +27,20 @@ DEFAULT_IGNORE_PATTERNS = [
 
 @dataclass
 class RepoIndexer:
+    """建立 repo 檔案索引與指標資訊。
+
+    Args:
+        repo_dir: snapshot repo 的根目錄。
+    """
+
     repo_dir: Path
 
     def build_index(self) -> RepoIndex:
+        """掃描檔案並產出 `RepoIndex`。
+
+        Returns:
+            `RepoIndex`。
+        """
         spec = self._load_gitignore()
         files: list[FileEntry] = []
         total_bytes = 0
@@ -59,11 +70,17 @@ class RepoIndexer:
         )
 
     def _iter_files(self) -> Iterable[Path]:
+        """迭代 repo 中的所有檔案。"""
         for path in self.repo_dir.rglob("*"):
             if path.is_file():
                 yield path
 
     def _load_gitignore(self) -> pathspec.PathSpec:
+        """載入 .gitignore 規則。
+
+        Returns:
+            `PathSpec`。
+        """
         patterns = list(DEFAULT_IGNORE_PATTERNS)
         gitignore_path = self.repo_dir / ".gitignore"
         if gitignore_path.exists():
@@ -71,6 +88,14 @@ class RepoIndexer:
         return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
 
     def _sha1(self, path: Path) -> str:
+        """計算檔案內容的 sha1。
+
+        Args:
+            path: 檔案路徑。
+
+        Returns:
+            sha1 hex 字串。
+        """
         hasher = hashlib.sha1()
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -78,6 +103,14 @@ class RepoIndexer:
         return hasher.hexdigest()
 
     def _detect_indicators(self, file_paths: set[str]) -> list[str]:
+        """偵測 build/test 相關指標檔。
+
+        Args:
+            file_paths: 相對路徑集合。
+
+        Returns:
+            指標字串列表。
+        """
         indicators: list[str] = []
         indicator_files = {
             "pyproject.toml",
@@ -107,9 +140,23 @@ class RepoIndexer:
 
 @dataclass
 class ScopeClassifier:
+    """根據指標檔推論 scope 資訊。
+
+    Args:
+        repo_dir: snapshot repo 的根目錄。
+    """
+
     repo_dir: Path
 
     def classify(self, repo_index: RepoIndex) -> list[ScopeCandidate]:
+        """產生 scope candidates。
+
+        Args:
+            repo_index: RepoIndexer 產出的索引資料。
+
+        Returns:
+            `ScopeCandidate` 列表。
+        """
         indicators = set(repo_index.indicators)
         language = None
         build_tool = None

@@ -17,6 +17,7 @@ from shared.ingestion_types import (
 
 
 def main() -> None:
+    """輸出 shared schema 的 JSON Schema 檔案。"""
     output_dir = Path(__file__).resolve().parents[1] / "docs" / "schemas"
     output_dir.mkdir(parents=True, exist_ok=True)
 

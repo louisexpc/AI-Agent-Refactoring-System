@@ -10,11 +10,27 @@ from shared.ingestion_types import ArtifactRef, ExecMatrix, ExecResult, ExecScop
 
 @dataclass
 class ExecProbeRunner:
+    """Best-effort 執行候選命令並寫入 logs 與結果。
+
+    Args:
+        repo_dir: snapshot repo 的工作目錄。
+        logs_dir: exec_probe log 輸出目錄。
+        coverage_dir: coverage 產物輸出目錄。
+    """
+
     repo_dir: Path
     logs_dir: Path
     coverage_dir: Path
 
     def run(self, matrix: ExecMatrix) -> ExecMatrix:
+        """逐一執行候選命令並回寫 results。
+
+        Args:
+            matrix: 要執行的 `ExecMatrix`。
+
+        Returns:
+            包含 results 的 `ExecMatrix`。
+        """
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.coverage_dir.mkdir(parents=True, exist_ok=True)
         exec_scopes: list[ExecScope] = []
@@ -37,6 +53,16 @@ class ExecProbeRunner:
         return ExecMatrix(scopes=exec_scopes)
 
     def _run_candidate(self, scope_id: str, cmd: str, candidate_id: str) -> ExecResult:
+        """執行單一候選命令並記錄 stdout/stderr。
+
+        Args:
+            scope_id: scope 識別碼。
+            cmd: 要執行的命令字串。
+            candidate_id: 命令候選識別碼。
+
+        Returns:
+            執行結果的 `ExecResult`。
+        """
         started = time.time()
         completed = subprocess.run(
             cmd,
@@ -86,6 +112,15 @@ class ExecProbeRunner:
 
     @staticmethod
     def _tail(text: str, limit: int = 4000) -> str | None:
+        """擷取輸出尾端內容，避免過長。
+
+        Args:
+            text: 原始輸出文字。
+            limit: 最大保留長度。
+
+        Returns:
+            截斷後的字串；若為空則回傳 None。
+        """
         if not text:
             return None
         if len(text) <= limit:

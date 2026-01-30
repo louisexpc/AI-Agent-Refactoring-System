@@ -26,9 +26,23 @@ STRING_LITERAL = re.compile(r"(['\"])(?P<text>.*?)(\1)")
 
 @dataclass
 class DbAssetIndexer:
+    """索引資料庫資產（schema/migrations/seed/sql）。
+
+    Args:
+        repo_dir: snapshot repo 的根目錄。
+    """
+
     repo_dir: Path
 
     def build(self, repo_index: RepoIndex) -> DbAssetsIndex:
+        """從 repo_index 篩選 DB 相關檔案。
+
+        Args:
+            repo_index: RepoIndexer 產出的索引資料。
+
+        Returns:
+            `DbAssetsIndex`。
+        """
         assets: list[DbAsset] = []
         for entry in repo_index.files:
             path = entry.path
@@ -48,6 +62,14 @@ class DbAssetIndexer:
 
     @staticmethod
     def _is_db_asset(path: str) -> bool:
+        """判斷路徑是否為 DB asset。
+
+        Args:
+            path: 檔案相對路徑（小寫）。
+
+        Returns:
+            是否屬於 DB asset。
+        """
         return (
             path.endswith(".sql")
             or "/migrations/" in path
@@ -60,6 +82,14 @@ class DbAssetIndexer:
 
     @staticmethod
     def _classify_kind(path: str) -> str:
+        """依路徑推測 asset 種類。
+
+        Args:
+            path: 檔案相對路徑（小寫）。
+
+        Returns:
+            asset 類型字串。
+        """
         if "/migrations/" in path:
             return "migration"
         if "schema" in path:
@@ -70,14 +100,36 @@ class DbAssetIndexer:
 
     @staticmethod
     def _sha1(text: str) -> str:
+        """產生 sha1 雜湊。
+
+        Args:
+            text: 原始字串。
+
+        Returns:
+            sha1 hex 字串。
+        """
         return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
 @dataclass
 class SqlInventoryExtractor:
+    """抽取 embedded SQL 與純 SQL 檔內容。
+
+    Args:
+        repo_dir: snapshot repo 的根目錄。
+    """
+
     repo_dir: Path
 
     def build(self, repo_index: RepoIndex) -> SqlInventory:
+        """掃描 repo 產出 SQL inventory。
+
+        Args:
+            repo_index: RepoIndexer 產出的索引資料。
+
+        Returns:
+            `SqlInventory`。
+        """
         items: list[SqlItem] = []
         for entry in repo_index.files:
             rel_path = entry.path
@@ -97,6 +149,15 @@ class SqlInventoryExtractor:
         return SqlInventory(items=items)
 
     def _from_sql_file(self, rel_path: str, lines: list[str]) -> list[SqlItem]:
+        """從 .sql 檔案抽取 SQL 片段。
+
+        Args:
+            rel_path: 相對路徑。
+            lines: 檔案內容行列表。
+
+        Returns:
+            `SqlItem` 列表。
+        """
         items: list[SqlItem] = []
         for idx, line in enumerate(lines, start=1):
             if not SQL_KEYWORDS.search(line):
@@ -118,6 +179,15 @@ class SqlInventoryExtractor:
         return items
 
     def _from_code_file(self, rel_path: str, lines: list[str]) -> list[SqlItem]:
+        """從程式碼檔案抽取 string literal SQL。
+
+        Args:
+            rel_path: 相對路徑。
+            lines: 檔案內容行列表。
+
+        Returns:
+            `SqlItem` 列表。
+        """
         items: list[SqlItem] = []
         for idx, line in enumerate(lines, start=1):
             if not SQL_KEYWORDS_STRICT.search(line):
@@ -144,6 +214,14 @@ class SqlInventoryExtractor:
 
     @staticmethod
     def _should_scan(path: str) -> bool:
+        """判斷檔案是否需要 SQL 掃描。
+
+        Args:
+            path: 相對路徑。
+
+        Returns:
+            是否需掃描。
+        """
         lower_path = path.lower()
         if lower_path.endswith(".sql"):
             return True
@@ -163,6 +241,14 @@ class SqlInventoryExtractor:
 
     @staticmethod
     def _classify_sql(text: str) -> str:
+        """依關鍵字推測 SQL 類型。
+
+        Args:
+            text: SQL 片段文字。
+
+        Returns:
+            "ddl" | "dml" | "unknown"。
+        """
         lowered = text.lower()
         if any(keyword in lowered for keyword in ("create", "alter", "drop")):
             return "ddl"
@@ -175,10 +261,27 @@ class SqlInventoryExtractor:
 
     @staticmethod
     def _truncate(text: str, limit: int = 300) -> str:
+        """裁剪過長的 SQL snippet。
+
+        Args:
+            text: 原始文字。
+            limit: 最大長度。
+
+        Returns:
+            截斷後文字。
+        """
         if len(text) <= limit:
             return text
         return text[:limit]
 
     @staticmethod
     def _sha1(text: str) -> str:
+        """產生 sha1 雜湊。
+
+        Args:
+            text: 原始文字。
+
+        Returns:
+            sha1 hex 字串。
+        """
         return hashlib.sha1(text.encode("utf-8")).hexdigest()

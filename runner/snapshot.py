@@ -12,6 +12,14 @@ from shared.ingestion_types import RepoMeta
 
 @dataclass
 class SnapshotResult:
+    """Snapshot 執行結果。
+
+    Args:
+        repo_dir: snapshot repo 的目錄。
+        meta: RepoMeta 資訊。
+        archive_path: snapshot archive 路徑（可為 None）。
+    """
+
     repo_dir: Path
     meta: RepoMeta
     archive_path: Path | None
@@ -19,11 +27,27 @@ class SnapshotResult:
 
 @dataclass
 class Snapshotter:
+    """負責 clone repo、固定 SHA、輸出 snapshot。
+
+    Args:
+        work_dir: snapshot 工作目錄。
+    """
+
     work_dir: Path
 
     def run(
         self, repo_url: str, output_dir: Path, create_archive: bool = True
     ) -> SnapshotResult:
+        """執行 snapshot 流程。
+
+        Args:
+            repo_url: git repo URL 或本機路徑。
+            output_dir: snapshot repo 輸出目錄。
+            create_archive: 是否建立 tar archive。
+
+        Returns:
+            `SnapshotResult`。
+        """
         if output_dir.exists():
             shutil.rmtree(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -64,15 +88,36 @@ class Snapshotter:
         return SnapshotResult(repo_dir=output_dir, meta=meta, archive_path=archive_path)
 
     def _git(self, args: list[str]) -> None:
+        """執行 git 指令。
+
+        Args:
+            args: git 子命令參數。
+        """
         subprocess.run(["git", *args], check=True)
 
     def _git_output(self, args: list[str]) -> str:
+        """執行 git 指令並回傳 stdout。
+
+        Args:
+            args: git 子命令參數。
+
+        Returns:
+            stdout 文字。
+        """
         result = subprocess.run(
             ["git", *args], check=True, capture_output=True, text=True
         )
         return result.stdout
 
     def _default_branch(self, repo_dir: Path) -> str | None:
+        """解析 default branch 名稱。
+
+        Args:
+            repo_dir: repo 工作目錄。
+
+        Returns:
+            default branch 名稱或 None。
+        """
         try:
             head_ref = self._git_output(
                 ["-C", str(repo_dir), "symbolic-ref", "refs/remotes/origin/HEAD"]
@@ -85,6 +130,14 @@ class Snapshotter:
         return None
 
     def _count_files(self, repo_dir: Path) -> tuple[int, int]:
+        """統計檔案數與總大小。
+
+        Args:
+            repo_dir: repo 工作目錄。
+
+        Returns:
+            (file_count, total_bytes)。
+        """
         file_count = 0
         total_bytes = 0
         for path in repo_dir.rglob("*"):

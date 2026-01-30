@@ -14,9 +14,23 @@ from shared.ingestion_types import (
 
 @dataclass
 class ExecMatrixBuilder:
+    """建立 Execution Matrix 的候選命令清單。
+
+    Args:
+        coverage_dir: coverage 產物的輸出目錄。
+    """
+
     coverage_dir: Path
 
     def build(self, scopes: list[ScopeCandidate]) -> ExecMatrix:
+        """依據 scope 產出 install/test/coverage 候選命令。
+
+        Args:
+            scopes: 由 ScopeClassifier 輸出的 scope 列表。
+
+        Returns:
+            組裝完成的 `ExecMatrix`。
+        """
         exec_scopes: list[ExecScope] = []
 
         for scope in scopes:
@@ -47,6 +61,14 @@ class ExecMatrixBuilder:
         return ExecMatrix(scopes=exec_scopes)
 
     def _python_candidates(self, scope_id: str) -> list[ExecCandidate]:
+        """產出 Python 相關的命令候選。
+
+        Args:
+            scope_id: scope 的識別碼。
+
+        Returns:
+            Python install/test/coverage 的候選命令列表。
+        """
         coverage_path = self.coverage_dir / "coverage.json"
         return [
             ExecCandidate(
@@ -76,6 +98,14 @@ class ExecMatrixBuilder:
         ]
 
     def _node_candidates(self, scope_id: str) -> list[ExecCandidate]:
+        """產出 Node.js 相關的命令候選。
+
+        Args:
+            scope_id: scope 的識別碼。
+
+        Returns:
+            Node.js install/test/coverage 的候選命令列表。
+        """
         return [
             ExecCandidate(
                 candidate_id=f"{scope_id}-install-1",

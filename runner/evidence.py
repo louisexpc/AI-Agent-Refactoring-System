@@ -13,9 +13,23 @@ from shared.ingestion_types import EvidenceIndex, EvidenceRef
 
 @dataclass
 class GitHubEvidenceFetcher:
+    """抓取 GitHub issues/PR/checks evidence。
+
+    Args:
+        artifacts_dir: evidence 輸出目錄。
+    """
+
     artifacts_dir: Path
 
     def fetch(self, repo_url: str) -> EvidenceIndex:
+        """抓取 evidence 並寫入 artifacts。
+
+        Args:
+            repo_url: GitHub repo URL。
+
+        Returns:
+            `EvidenceIndex`。
+        """
         repo = _parse_github_repo(repo_url)
         if not repo:
             return EvidenceIndex()
@@ -26,6 +40,15 @@ class GitHubEvidenceFetcher:
         return EvidenceIndex(issues=issues, prs=prs, checks=checks)
 
     def _fetch_issues(self, owner: str, name: str) -> list[EvidenceRef]:
+        """抓取 issues 與 comments。
+
+        Args:
+            owner: repo owner。
+            name: repo name。
+
+        Returns:
+            `EvidenceRef` 列表。
+        """
         issues_dir = self.artifacts_dir / "issues"
         issues_dir.mkdir(parents=True, exist_ok=True)
         issues_data = self._get_json(
@@ -53,6 +76,15 @@ class GitHubEvidenceFetcher:
     def _fetch_prs_and_checks(
         self, owner: str, name: str
     ) -> tuple[list[EvidenceRef], list[EvidenceRef]]:
+        """抓取 PRs、reviews、comments、files 與 check runs。
+
+        Args:
+            owner: repo owner。
+            name: repo name。
+
+        Returns:
+            (prs_refs, checks_refs)。
+        """
         prs_dir = self.artifacts_dir / "prs"
         checks_dir = self.artifacts_dir / "checks"
         prs_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +141,14 @@ class GitHubEvidenceFetcher:
 
     @staticmethod
     def _get_json(url: str) -> Any:
+        """發送 GET 並回傳 JSON（失敗回空）。
+
+        Args:
+            url: 目標 URL。
+
+        Returns:
+            JSON 解析結果或空 list。
+        """
         request = urllib.request.Request(
             url, headers={"Accept": "application/vnd.github+json"}
         )
@@ -121,6 +161,14 @@ class GitHubEvidenceFetcher:
 
 
 def _parse_github_repo(repo_url: str) -> tuple[str, str] | None:
+    """解析 GitHub URL 為 (owner, name)。
+
+    Args:
+        repo_url: GitHub repo URL。
+
+    Returns:
+        (owner, name) 或 None。
+    """
     if repo_url.startswith("git@github.com:"):
         repo_url = repo_url.replace("git@github.com:", "https://github.com/")
     if repo_url.startswith("https://github.com/"):

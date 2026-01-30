@@ -15,6 +15,11 @@ if TYPE_CHECKING:
 
 
 def ensure_repo_root_on_path() -> Path:
+    """確保 repo root 已加入 sys.path。
+
+    Returns:
+        repo root 路徑。
+    """
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
         sys.path.append(str(repo_root))
@@ -23,9 +28,24 @@ def ensure_repo_root_on_path() -> Path:
 
 @dataclass
 class RunRepository:
+    """Run metadata 的最小儲存介面。
+
+    Args:
+        layout: `ArtifactLayout` 實例。
+    """
+
     layout: "ArtifactLayout"
 
     def create_run(self, repo_url: str, start_prompt: str | None) -> "RunRecord":
+        """建立新的 run 並寫入 run_meta.json。
+
+        Args:
+            repo_url: repo URL 或本機路徑。
+            start_prompt: 啟動提示字串。
+
+        Returns:
+            新建立的 `RunRecord`。
+        """
         from shared.ingestion_types import RunRecord, RunStatus
 
         run_id = uuid4().hex
@@ -44,29 +64,70 @@ class RunRepository:
         return run
 
     def update_status(self, run: "RunRecord", status: "RunStatus") -> "RunRecord":
+        """更新 run 狀態並落盤。
+
+        Args:
+            run: 既有的 `RunRecord`。
+            status: 新狀態。
+
+        Returns:
+            更新後的 `RunRecord`。
+        """
         now = datetime.now(tz=UTC)
         updated = run.model_copy(update={"status": status, "updated_at": now})
         self._write_run(updated)
         return updated
 
     def update_commit(self, run: "RunRecord", commit_sha: str) -> "RunRecord":
+        """更新 commit SHA 並落盤。
+
+        Args:
+            run: 既有的 `RunRecord`。
+            commit_sha: commit SHA。
+
+        Returns:
+            更新後的 `RunRecord`。
+        """
         now = datetime.now(tz=UTC)
         updated = run.model_copy(update={"commit_sha": commit_sha, "updated_at": now})
         self._write_run(updated)
         return updated
 
     def get_run(self, run_id: str) -> "RunRecord":
+        """讀取指定 run。
+
+        Args:
+            run_id: run 識別碼。
+
+        Returns:
+            `RunRecord`。
+        """
         from shared.ingestion_types import RunRecord
 
         data = self.layout.run_meta_path(run_id).read_text(encoding="utf-8")
         return RunRecord.model_validate_json(data)
 
     def _write_run(self, run: "RunRecord") -> None:
+        """寫入 run_meta.json。
+
+        Args:
+            run: 要寫入的 `RunRecord`。
+        """
         path = self.layout.run_meta_path(run.run_id)
         path.write_text(run.model_dump_json(indent=2), encoding="utf-8")
 
 
 def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> str:
+    """執行一次完整 ingestion pipeline。
+
+    Args:
+        repo_url: repo URL 或本機路徑。
+        start_prompt: 啟動提示字串。
+        artifacts_root: artifacts 根目錄。
+
+    Returns:
+        run_id。
+    """
     ensure_repo_root_on_path()
     from core.storage.artifacts import ArtifactLayout
     from runner.data_assets import DbAssetIndexer, SqlInventoryExtractor
@@ -150,6 +211,11 @@ def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> s
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """建立 CLI 參數解析器。
+
+    Returns:
+        `ArgumentParser`。
+    """
     parser = argparse.ArgumentParser(description="Run ingestion once")
     parser.add_argument("--repo_url", required=True)
     parser.add_argument("--start_prompt")
@@ -158,6 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI 入口點。"""
     parser = build_parser()
     args = parser.parse_args()
     repo_root = ensure_repo_root_on_path()

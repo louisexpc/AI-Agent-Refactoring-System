@@ -14,6 +14,15 @@ def start_run(
     payload: StartRunRequest,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> StartRunResponse:
+    """啟動新的 ingestion run。
+
+    Args:
+        payload: `StartRunRequest`。
+        service: DI 注入的 `IngestionService`。
+
+    Returns:
+        `StartRunResponse`。
+    """
     run_id = service.start_run(
         repo_url=payload.repo_url,
         start_prompt=payload.start_prompt,
@@ -27,6 +36,15 @@ def get_run(
     run_id: str,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> RunStatusResponse:
+    """取得 run 狀態與摘要資訊。
+
+    Args:
+        run_id: run 識別碼。
+        service: DI 注入的 `IngestionService`。
+
+    Returns:
+        `RunStatusResponse`。
+    """
     try:
         run = service.get_run(run_id)
     except KeyError as exc:
@@ -46,6 +64,16 @@ def get_artifact(
     artifact_name: str,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> FileResponse:
+    """下載指定 artifact 檔案。
+
+    Args:
+        run_id: run 識別碼。
+        artifact_name: artifact 名稱。
+        service: DI 注入的 `IngestionService`。
+
+    Returns:
+        `FileResponse`。
+    """
     try:
         path = service.get_artifact(run_id, artifact_name)
     except FileNotFoundError as exc:

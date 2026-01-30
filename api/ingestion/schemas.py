@@ -6,6 +6,8 @@ from shared.ingestion_types import ArtifactRef, ErrorSummary, RunStatus, ScopeCa
 
 
 class IngestionOptions(BaseModel):
+    """Ingestion 的可選參數。"""
+
     depth: int | None = None
     include_evidence: bool = True
     max_issues: int | None = None
@@ -13,16 +15,22 @@ class IngestionOptions(BaseModel):
 
 
 class StartRunRequest(BaseModel):
+    """啟動 run 的 request DTO。"""
+
     repo_url: str
     start_prompt: str | None = None
     options: IngestionOptions | None = None
 
 
 class StartRunResponse(BaseModel):
+    """啟動 run 的 response DTO。"""
+
     run_id: str
 
 
 class RunStatusResponse(BaseModel):
+    """run 狀態查詢的 response DTO。"""
+
     status: RunStatus
     commit_sha: str | None = None
     artifacts: list[ArtifactRef] = Field(default_factory=list)
