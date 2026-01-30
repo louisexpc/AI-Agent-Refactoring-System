@@ -69,6 +69,7 @@ class RunRepository:
 def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> str:
     ensure_repo_root_on_path()
     from core.storage.artifacts import ArtifactLayout
+    from runner.depgraph import DepGraphExtractor
     from runner.exec_matrix import ExecMatrixBuilder
     from runner.exec_probe import ExecProbeRunner
     from runner.indexer import RepoIndexer, ScopeClassifier
@@ -116,6 +117,11 @@ def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> s
         exec_matrix = exec_matrix
     exec_matrix_path = layout.run_dir(run.run_id) / "exec" / "exec_matrix.json"
     exec_matrix_path.write_text(exec_matrix.model_dump_json(indent=2), encoding="utf-8")
+
+    depgraph = DepGraphExtractor(snapshot_result.repo_dir)
+    dep_graph_l0 = depgraph.build(repo_index)
+    dep_graph_path = layout.run_dir(run.run_id) / "depgraph" / "dep_graph_l0.json"
+    dep_graph_path.write_text(dep_graph_l0.model_dump_json(indent=2), encoding="utf-8")
     run = repo.update_status(run, RunStatus.DONE)
     return run.run_id
 
