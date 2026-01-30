@@ -69,6 +69,7 @@ class RunRepository:
 def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> str:
     ensure_repo_root_on_path()
     from core.storage.artifacts import ArtifactLayout
+    from runner.data_assets import DbAssetIndexer, SqlInventoryExtractor
     from runner.depgraph import DepGraphExtractor
     from runner.exec_matrix import ExecMatrixBuilder
     from runner.exec_probe import ExecProbeRunner
@@ -122,6 +123,18 @@ def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> s
     dep_graph_l0 = depgraph.build(repo_index)
     dep_graph_path = layout.run_dir(run.run_id) / "depgraph" / "dep_graph_l0.json"
     dep_graph_path.write_text(dep_graph_l0.model_dump_json(indent=2), encoding="utf-8")
+
+    db_indexer = DbAssetIndexer(snapshot_result.repo_dir)
+    db_assets = db_indexer.build(repo_index)
+    db_assets_path = layout.run_dir(run.run_id) / "data" / "db_assets_index.json"
+    db_assets_path.write_text(db_assets.model_dump_json(indent=2), encoding="utf-8")
+
+    sql_extractor = SqlInventoryExtractor(snapshot_result.repo_dir)
+    sql_inventory = sql_extractor.build(repo_index)
+    sql_inventory_path = layout.run_dir(run.run_id) / "data" / "sql_inventory.json"
+    sql_inventory_path.write_text(
+        sql_inventory.model_dump_json(indent=2), encoding="utf-8"
+    )
     run = repo.update_status(run, RunStatus.DONE)
     return run.run_id
 
