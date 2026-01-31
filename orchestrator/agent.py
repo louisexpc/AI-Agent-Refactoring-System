@@ -1,6 +1,7 @@
 import os
 from typing import Annotated, TypedDict
 
+from dotenv import load_dotenv
 from langchain_community.agent_toolkits import FileManagementToolkit
 from langchain_core.messages import SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -8,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
+load_dotenv()
 # ==========================================
 # 1. 設定工作區
 # ==========================================
@@ -102,16 +104,16 @@ graph_builder.add_conditional_edges("agent", should_continue)
 graph_builder.add_edge("tools", "agent")
 
 app = graph_builder.compile()
-
+app.get_graph().print_ascii()
 # ==========================================
 # 7. 執行
 # ==========================================
 if __name__ == "__main__":
     print("--- 開始重構任務 ---")
-    user_input = (
-        "請幫我將 Racing-Car-Katas\Python 裡面的所有 Python 檔案重構成go語言，"
-        "在保持檔案結構完整的情況下搬移到 new_refactored_app"
-    )
+    user_input = """
+    請幫我將 Racing-Car-Katas/Python 裡面的所有 Python 檔案移植成 go 語言，
+    在保持檔案結構完整的情況下搬移到 new_refactored_app，並且直接開始
+    """
 
     # 這裡的範例保持原樣，但確保縮排為 4 隔
     events = app.stream({"messages": [("user", user_input)]}, stream_mode="values")
@@ -120,3 +122,5 @@ if __name__ == "__main__":
         if "messages" in event:
             last_msg = event["messages"][-1]
             print(f"[{last_msg.type.upper()}]: {last_msg.content}")
+            if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+                print(f"   -> 呼叫工具: {last_msg.tool_calls}")
