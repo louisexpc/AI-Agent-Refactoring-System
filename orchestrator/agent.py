@@ -1,9 +1,9 @@
 import os
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 from dotenv import load_dotenv
 from langchain_community.agent_toolkits import FileManagementToolkit
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -70,7 +70,7 @@ SYSTEM_PROMPT = """
 # ==========================================
 # 5. 定義 Nodes
 # ==========================================
-def chatbot(state: AgentState):
+def chatbot(state: AgentState) -> dict[str, list[BaseMessage]]:
     messages = state["messages"]
 
     # 優化邏輯：將 SystemMessage 插入
@@ -93,7 +93,7 @@ graph_builder.add_node("tools", tool_node)
 graph_builder.add_edge(START, "agent")
 
 
-def should_continue(state: AgentState):
+def should_continue(state: AgentState) -> Literal["tools", "__end__"]:
     last_message = state["messages"][-1]
     if last_message.tool_calls:
         return "tools"
