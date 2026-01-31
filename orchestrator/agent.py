@@ -108,7 +108,10 @@ app = graph_builder.compile()
 # ==========================================
 if __name__ == "__main__":
     print("--- 開始重構任務 ---")
-    user_input = "請幫我重構 Racing-Car-Katas 到 go 語言..."
+    user_input = (
+        "請幫我將 Racing-Car-Katas\Python 裡面的所有 Python 檔案重構成go語言，"
+        "在保持檔案結構完整的情況下搬移到 new_refactored_app"
+    )
 
     # 這裡的範例保持原樣，但確保縮排為 4 隔
     events = app.stream({"messages": [("user", user_input)]}, stream_mode="values")
