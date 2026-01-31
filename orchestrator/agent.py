@@ -111,8 +111,18 @@ app.get_graph().print_ascii()
 if __name__ == "__main__":
     print("--- 開始重構任務 ---")
     user_input = """
-    請幫我將 Racing-Car-Katas/Python 裡面的所有 Python 檔案移植成 go 語言，
-    在保持檔案結構完整的情況下搬移到 new_refactored_app，並且直接開始
+    First prompt:
+    Refactor the Python code in the ./Python folder into Go.
+    First, analyze the project and generate the spec.md in
+    the ./spec directory. This spec.md should detail the
+    folder structure, a comprehensive to-do list, and other
+    relevant specifications. The refactored Go code should
+    be placed in ./refactor-golang. At the end of each
+    refactoring phase, validate the changes by running unit
+    tests or executing the project to check for
+    errors/warnings. Follow standard Git flow for version
+    control. Finally, update the spec/spec.md to-do list to
+    reflect the completed tasks for that phase.
     """
 
     # 這裡的範例保持原樣，但確保縮排為 4 隔
