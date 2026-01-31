@@ -3,6 +3,10 @@ name = "tsmc-2026-hackathon"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "langchain-community>=0.4.1",
+    "langchain-google-genai>=4.2.0",
+    "langchain-google-vertexai>=3.2.2",
+    "langgraph>=1.0.7",
     "mypy>=1.19.1",
     "pre-commit>=4.5.1",
     "ruff>=0.14.14",
