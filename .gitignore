@@ -17,3 +17,6 @@ build/
 
 #RepoIngestion
 artifacts/
+
+# Secrets & Configs
+*.json
