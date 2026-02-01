@@ -17,6 +17,7 @@
 | dep_reverse_index | artifacts/<run_id>/depgraph/dep_reverse_index.json |
 | dep_metrics | artifacts/<run_id>/depgraph/dep_metrics.json |
 | external_deps_inventory | artifacts/<run_id>/depgraph/external_deps_inventory.json |
+| dep_graph_errors | artifacts/<run_id>/logs/dep_graph/errors.jsonl |
 | db_assets_index | artifacts/<run_id>/data/db_assets_index.json |
 | sql_inventory | artifacts/<run_id>/data/sql_inventory.json |
 | evidence_index | artifacts/<run_id>/evidence/evidence_index.json |
@@ -51,6 +52,7 @@
 - depgraph/dep_reverse_index.json → DepReverseIndex
 - depgraph/dep_metrics.json → DepMetrics
 - depgraph/external_deps_inventory.json → ExternalDepsInventory
+- logs/dep_graph/errors.jsonl → (text/jsonl, best-effort parsing errors)
 
 ## Data assets & SQL inventory
 

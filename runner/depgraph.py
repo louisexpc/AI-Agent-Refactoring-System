@@ -24,15 +24,21 @@ from shared.ingestion_types import (
 )
 
 try:
-    from tree_sitter import Parser
-    from tree_sitter_languages import get_language
+    # tree-sitter 0.20/0.21 has API differences across platforms and packages.
+    # We normalize capture tuples and keep best-effort behavior when parsing fails.
+    from tree_sitter import Language, Parser, Query, QueryCursor
 except ImportError:  # pragma: no cover
+    Language = None
     Parser = None
-    get_language = None
+    Query = None
+    QueryCursor = None
 
 
 _PARSER_CACHE: dict[str, Parser | None] = {}
+_PARSER_ERROR: dict[str, str] = {}
 _LANG_ERROR_ONCE: set[str] = set()
+_TREE_SITTER_READY = False
+_TREE_SITTER_ERROR = ""
 
 
 LANG_BY_EXT = {
@@ -212,8 +218,10 @@ class DepGraphExtractor:
             _write_error(errors_path, rel_path, lang, str(exc))
             return []
 
-        if Parser is None or get_language is None:
-            _write_error(errors_path, rel_path, lang, "tree-sitter not available")
+        if not _TREE_SITTER_READY:
+            if "tree-sitter" not in _LANG_ERROR_ONCE:
+                _LANG_ERROR_ONCE.add("tree-sitter")
+                _write_error(errors_path, rel_path, lang, _TREE_SITTER_ERROR)
             return _regex_fallback(
                 rel_path, lang, code.decode("utf-8", errors="ignore")
             )
@@ -222,7 +230,8 @@ class DepGraphExtractor:
         if parser is None:
             if lang not in _LANG_ERROR_ONCE:
                 _LANG_ERROR_ONCE.add(lang)
-                _write_error(errors_path, rel_path, lang, "tree-sitter unsupported")
+                message = _PARSER_ERROR.get(lang, "tree-sitter unsupported")
+                _write_error(errors_path, rel_path, lang, message)
             return _regex_fallback(
                 rel_path, lang, code.decode("utf-8", errors="ignore")
             )
@@ -235,14 +244,14 @@ class DepGraphExtractor:
             )
 
         try:
-            query = parser.language.query(query_text)
+            query = Query(parser.language, query_text)
+            cursor = QueryCursor(query)
+            captures = cursor.captures(tree.root_node)
         except Exception as exc:  # pragma: no cover
             _write_error(errors_path, rel_path, lang, f"query error: {exc}")
             return _regex_fallback(
                 rel_path, lang, code.decode("utf-8", errors="ignore")
             )
-
-        captures = query.captures(tree.root_node)
         if lang == "python":
             return _extract_python_edges(rel_path, code, captures)
         if lang in {"javascript", "typescript"}:
@@ -259,22 +268,97 @@ def _build_parser(lang: str) -> Parser | None:
         return _PARSER_CACHE[lang]
     try:
         parser = Parser()
-        parser.language = get_language(lang)
+        parser.language = _get_language(lang)
         _PARSER_CACHE[lang] = parser
         return parser
-    except Exception:
+    except Exception as exc:
+        _PARSER_ERROR[lang] = f"tree-sitter unsupported: {exc}"
         _PARSER_CACHE[lang] = None
         return None
+
+
+def _get_language(lang: str):
+    if lang == "python":
+        from tree_sitter_python import language as python_language
+
+        return Language(python_language())
+    if lang == "javascript":
+        from tree_sitter_javascript import language as javascript_language
+
+        return Language(javascript_language())
+    if lang == "typescript":
+        from tree_sitter_typescript import language as typescript_language
+
+        return Language(typescript_language())
+    if lang == "go":
+        from tree_sitter_go import language as go_language
+
+        return Language(go_language())
+    if lang == "java":
+        from tree_sitter_java import language as java_language
+
+        return Language(java_language())
+    if lang == "rust":
+        from tree_sitter_rust import language as rust_language
+
+        return Language(rust_language())
+    if lang == "c":
+        from tree_sitter_c import language as c_language
+
+        return Language(c_language())
+    if lang == "cpp":
+        from tree_sitter_cpp import language as cpp_language
+
+        return Language(cpp_language())
+    raise ValueError(f"unsupported language: {lang}")
+
+
+def _probe_tree_sitter() -> None:
+    global _TREE_SITTER_READY, _TREE_SITTER_ERROR
+    if Parser is None or Language is None or Query is None or QueryCursor is None:
+        _TREE_SITTER_READY = False
+        _TREE_SITTER_ERROR = "tree-sitter not available"
+        return
+    try:
+        parser = Parser()
+        parser.language = _get_language("python")
+        _TREE_SITTER_READY = True
+        _TREE_SITTER_ERROR = ""
+    except Exception as exc:
+        _TREE_SITTER_READY = False
+        _TREE_SITTER_ERROR = f"tree-sitter unsupported: {exc}"
+
+
+def _iter_captures(
+    captures: list[tuple[object, str]] | list[tuple[object, str, int]],
+) -> list[tuple[object, str]]:
+    """Normalize QueryCursor capture tuples across tree-sitter versions."""
+    normalized: list[tuple[object, str]] = []
+    for capture in captures:
+        if len(capture) < 2:
+            continue
+        first = capture[0]
+        second = capture[1]
+        if hasattr(first, "start_byte"):
+            node = first
+            name = second
+        elif hasattr(second, "start_byte"):
+            node = second
+            name = first
+        else:
+            continue
+        normalized.append((node, name))
+    return normalized
 
 
 def _extract_python_edges(
     rel_path: str,
     code: bytes,
-    captures: list[tuple[object, str]],
+    captures: list[tuple[object, str]] | list[tuple[object, str, int]],
 ) -> list[RawEdge]:
     text = code.decode("utf-8", errors="ignore")
     raw_edges: list[RawEdge] = []
-    for node, name in captures:
+    for node, name in _iter_captures(captures):
         if name not in {"import", "from_import"}:
             continue
         node_text = text[node.start_byte : node.end_byte]
@@ -323,11 +407,11 @@ def _extract_js_edges(
     rel_path: str,
     lang: str,
     code: bytes,
-    captures: list[tuple[object, str]],
+    captures: list[tuple[object, str]] | list[tuple[object, str, int]],
 ) -> list[RawEdge]:
     text = code.decode("utf-8", errors="ignore")
     raw_edges: list[RawEdge] = []
-    for node, name in captures:
+    for node, name in _iter_captures(captures):
         if name == "call_name":
             continue
         dst_raw = text[node.start_byte : node.end_byte]
@@ -360,7 +444,7 @@ def _extract_generic_edges(
     rel_path: str,
     lang: str,
     code: bytes,
-    captures: list[tuple[object, str]],
+    captures: list[tuple[object, str]] | list[tuple[object, str, int]],
 ) -> list[RawEdge]:
     text = code.decode("utf-8", errors="ignore")
     raw_edges: list[RawEdge] = []
@@ -370,7 +454,7 @@ def _extract_generic_edges(
     if lang == "rust":
         ref_kind = DepRefKind.USE
 
-    for node, _name in captures:
+    for node, _name in _iter_captures(captures):
         dst_raw = text[node.start_byte : node.end_byte]
         dst_raw = dst_raw.strip().strip("\"'<> ")
         if not dst_raw:
@@ -758,3 +842,6 @@ def _to_range(node: object) -> DepRange:
         end_line=end[0] + 1,
         end_col=end[1],
     )
+
+
+_probe_tree_sitter()

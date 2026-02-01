@@ -153,6 +153,7 @@
   - edges: DepEdge[]
   - import/include/use/require 等邊
   - version, generated_at
+  - 備註：dep graph 以 tree-sitter 解析為主，若遇到語法/依賴問題會降級到 regex best-effort，並記錄在 logs/dep_graph/errors.jsonl。
 - DepNode: node_id, path, kind, lang, ext
   - node_id: 節點識別碼（通常為路徑）
   - path: 檔案路徑
