@@ -14,7 +14,7 @@ Project3:經典購物車系統，由熱門語言撰寫
   主要測試弱型別語言轉強型別語言Agent要可以理解不同類席資料庫的差異，並妥善轉成RAW SQL
   Backend重構成強型別(70%)
   所有的RAW SQL都要可以被測試覆蓋(30%)
-----
+
 - 只可以輸入init prompt和start prompt
 - 輸入 : repo網址&prompt
 - 輸出 : 每輪迭代需產出重構評估報告、下輪計畫
