@@ -13,7 +13,10 @@
 | exec_probe_results | artifacts/<run_id>/exec/exec_probe_results.json |
 | exec_probe_logs | artifacts/<run_id>/logs/exec_probe/*.log |
 | coverage | artifacts/<run_id>/coverage/coverage.json |
-| dep_graph_l0 | artifacts/<run_id>/depgraph/dep_graph_l0.json |
+| dep_graph | artifacts/<run_id>/depgraph/dep_graph.json |
+| dep_reverse_index | artifacts/<run_id>/depgraph/dep_reverse_index.json |
+| dep_metrics | artifacts/<run_id>/depgraph/dep_metrics.json |
+| external_deps_inventory | artifacts/<run_id>/depgraph/external_deps_inventory.json |
 | db_assets_index | artifacts/<run_id>/data/db_assets_index.json |
 | sql_inventory | artifacts/<run_id>/data/sql_inventory.json |
 | evidence_index | artifacts/<run_id>/evidence/evidence_index.json |
@@ -44,7 +47,10 @@
 
 ## Dependency graph
 
-- depgraph/dep_graph_l0.json → DepGraphL0
+- depgraph/dep_graph.json → DepGraph
+- depgraph/dep_reverse_index.json → DepReverseIndex
+- depgraph/dep_metrics.json → DepMetrics
+- depgraph/external_deps_inventory.json → ExternalDepsInventory
 
 ## Data assets & SQL inventory
 

@@ -71,22 +71,95 @@ class ExecMatrix(BaseModel):
     scopes: list[ExecScope] = Field(default_factory=list)
 
 
+class DepRange(BaseModel):
+    start_line: int
+    start_col: int
+    end_line: int
+    end_col: int
+
+
+class DepDstKind(str, Enum):
+    INTERNAL_FILE = "internal_file"
+    EXTERNAL_PKG = "external_pkg"
+    STDLIB = "stdlib"
+    RELATIVE = "relative"
+    UNKNOWN = "unknown"
+
+
+class DepRefKind(str, Enum):
+    IMPORT = "import"
+    INCLUDE = "include"
+    USE = "use"
+    REQUIRE = "require"
+    DYNAMIC_IMPORT = "dynamic_import"
+    OTHER = "other"
+
+
 class DepNode(BaseModel):
     node_id: str
     path: str
     kind: str = "file"
+    lang: str | None = None
+    ext: str | None = None
 
 
 class DepEdge(BaseModel):
     src: str
-    dst: str
-    kind: str = "import"
-    confidence: float | None = None
+    lang: str
+    ref_kind: DepRefKind
+    dst_raw: str
+    dst_norm: str
+    dst_kind: DepDstKind
+    range: DepRange
+    confidence: float
+    dst_resolved_path: str | None = None
+    symbol: str | None = None
+    is_relative: bool | None = None
+    extras: dict[str, Any] = Field(default_factory=dict)
 
 
-class DepGraphL0(BaseModel):
+class DepGraph(BaseModel):
     nodes: list[DepNode] = Field(default_factory=list)
     edges: list[DepEdge] = Field(default_factory=list)
+    version: str = "2"
+    generated_at: datetime | None = None
+
+
+class DepRef(BaseModel):
+    src: str
+    range: DepRange
+
+
+class DepReverseIndexEntry(BaseModel):
+    dst: str
+    refs: list[DepRef] = Field(default_factory=list)
+
+
+class DepReverseIndex(BaseModel):
+    items: list[DepReverseIndexEntry] = Field(default_factory=list)
+
+
+class DepFileMetrics(BaseModel):
+    path: str
+    fan_in: int
+    fan_out: int
+    in_cycle: bool
+    scc_id: int | None = None
+    internal_ratio: float | None = None
+
+
+class DepMetrics(BaseModel):
+    files: list[DepFileMetrics] = Field(default_factory=list)
+
+
+class ExternalDepItem(BaseModel):
+    dst_norm: str
+    count: int
+    top_importers: list[str] = Field(default_factory=list)
+
+
+class ExternalDepsInventory(BaseModel):
+    items: list[ExternalDepItem] = Field(default_factory=list)
 
 
 class DbAsset(BaseModel):
