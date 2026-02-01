@@ -153,11 +153,13 @@
   - edges: DepEdge[]
   - import/include/use/require 等邊
   - version, generated_at
-  - 備註：dep graph 以 tree-sitter 解析為主，若遇到語法/依賴問題會降級到 regex best-effort，並記錄在 logs/dep_graph/errors.jsonl。
+  - 補充：若 `dst_resolved_path` 缺失，會用 `nodes`（repo 內檔案清單）做 best-effort 反查；成功時將 `dst_kind` 調整為 `internal_file`，並降低 `confidence`。
 - DepNode: node_id, path, kind, lang, ext
   - node_id: 節點識別碼（通常為路徑）
   - path: 檔案路徑
   - kind: 節點類型（預設 file）
+  - lang: 語言識別（可為 null）
+  - ext: 副檔名（可為 null）
 - DepEdge: src, lang, ref_kind, dst_raw, dst_norm, dst_kind, range, confidence
   - src: 來源檔案
   - lang: 語言識別（python/js/ts/go...）
@@ -213,7 +215,7 @@
 2. Snapshot: clone/fetch、固定 commit SHA、輸出 repo_meta 與 snapshot archive
 3. Index & Scope: 產出 repo_index 與 scope_candidates
 4. Exec Matrix + Probe: 生成命令候選、best-effort 執行並寫 logs/coverage
-5. DepGraph: tree-sitter 解析的依賴圖 + reverse index/metrics
+5. DepGraph: tree-sitter 依賴抽取 + best-effort 解析
 6. Data Assets + SQL Inventory: 索引 SQL/migration 並抽取 embedded SQL
 7. Evidence: GitHub issues/PR/checks best-effort 抓取
 
@@ -223,7 +225,7 @@
 - ScopeClassifier: 只處理 scope 推論
 - ExecMatrixBuilder: 只負責命令候選生成
 - ExecProbeRunner: 只負責命令執行與 logs
-- DepGraphExtractor: 依賴抽取與 reverse index/metrics
+- DepGraphExtractor: L0 依賴抽取
 - DbAssetIndexer / SqlInventoryExtractor: DB asset 與 SQL 抽取
 - GitHubEvidenceFetcher: issues/PR/checks evidence
 
@@ -264,10 +266,7 @@
 - exec/exec_matrix.json
 - logs/exec_probe/*.log
 - coverage/coverage.json
-- depgraph/dep_graph.json
-- depgraph/dep_reverse_index.json
-- depgraph/dep_metrics.json
-- depgraph/external_deps_inventory.json
+- depgraph/dep_graph_l0.json
 - data/db_assets_index.json
 - data/sql_inventory.json
 - evidence/evidence_index.json

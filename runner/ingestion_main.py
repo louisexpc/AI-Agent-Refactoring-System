@@ -181,10 +181,27 @@ def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> s
     exec_matrix_path = layout.run_dir(run.run_id) / "exec" / "exec_matrix.json"
     exec_matrix_path.write_text(exec_matrix.model_dump_json(indent=2), encoding="utf-8")
 
-    depgraph = DepGraphExtractor(snapshot_result.repo_dir)
-    dep_graph_l0 = depgraph.build(repo_index)
-    dep_graph_path = layout.run_dir(run.run_id) / "depgraph" / "dep_graph_l0.json"
-    dep_graph_path.write_text(dep_graph_l0.model_dump_json(indent=2), encoding="utf-8")
+    depgraph = DepGraphExtractor(
+        snapshot_result.repo_dir,
+        logs_dir=layout.run_dir(run.run_id) / "logs",
+    )
+    dep_graph, dep_reverse, dep_metrics, external_inventory = depgraph.build_all(
+        repo_index
+    )
+    dep_graph_path = layout.run_dir(run.run_id) / "depgraph" / "dep_graph.json"
+    dep_graph_path.write_text(dep_graph.model_dump_json(indent=2), encoding="utf-8")
+    dep_reverse_path = (
+        layout.run_dir(run.run_id) / "depgraph" / "dep_reverse_index.json"
+    )
+    dep_reverse_path.write_text(dep_reverse.model_dump_json(indent=2), encoding="utf-8")
+    dep_metrics_path = layout.run_dir(run.run_id) / "depgraph" / "dep_metrics.json"
+    dep_metrics_path.write_text(dep_metrics.model_dump_json(indent=2), encoding="utf-8")
+    external_deps_path = (
+        layout.run_dir(run.run_id) / "depgraph" / "external_deps_inventory.json"
+    )
+    external_deps_path.write_text(
+        external_inventory.model_dump_json(indent=2), encoding="utf-8"
+    )
 
     db_indexer = DbAssetIndexer(snapshot_result.repo_dir)
     db_assets = db_indexer.build(repo_index)
