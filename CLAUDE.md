@@ -32,97 +32,162 @@ Recommendations:
 - 分析 Module Dependency 決定改訂計畫 + Test Cases 測試
 ### Generate Test (Yoyo)
 - 策略：Golden Master / Snapshot Testing + Unit Test 雙層驗證
-- 對外 API：`run_test_generation()` 單一入口，供迭代 pipeline 呼叫
-- 呼叫方透過傳入不同的 `dep_graph` 範圍控制測試全 repo 或單一 module
+- 對外 API：兩個入口，供迭代 pipeline 呼叫
+  - `run_overall_test()`: 建立 golden baseline / 執行 golden comparison
+  - `run_module_test()`: 針對單一 module 生成 + 執行 unit test
 - 所有 LLM 依賴的模組在 `llm_client=None` 時都有 stub fallback
+- 以 file 級別為單位（非 function 級別），LLM 讀整個檔案直接生成測試
 
-#### 測試流程
+#### Pipeline 呼叫流程
 ```
-迭代前（iteration=0, refactored_repo_dir=None）:
-  Phase 1-3b → 建立 golden baseline
-  Phase 5    → emit unit test 檔案
-  Phase 5b   → 執行 unit tests 收集 coverage
+階段一（迭代前）：
+  run_overall_test(refactored_repo_dir=None)
+  → File Filter → Guidance → Golden Capture → 建立 baseline
 
-每輪迭代（iteration=1,2,3..., refactored_repo_dir=重構後目錄）:
-  ① Phase 5b: 跑 unit test（對重構後 code）→ pass/fail + coverage
-  ② Phase 4:  跑 golden comparison（新舊 code 輸出 diff）→ 行為是否改變
-  ③ Phase 6:  合併報告：unit test results + golden comparison results
+階段二（每個 Stage）：
+  ① run_module_test(file_path="moduleA.py")
+     → 讀舊 code → LLM 生成 unit test → 跑舊 code baseline
+  ② Apply Agent 重構 moduleA
+  ③ run_module_test(file_path="moduleA.py", refactored_repo_dir=...)
+     → 同一組 test 跑新 code → 比對 baseline
+  ④ run_overall_test(refactored_repo_dir=...)
+     → golden comparison 確認整體行為不變
+  → 兩種都 pass → 進入下一個 Stage
+
+最終驗收：
+  run_overall_test(refactored_repo_dir=最終版本)
+  → 產出 Final Report
 ```
 
 #### Phase 說明
-**Phase 1：識別 Entry Points**
-- 從 RepoIngestion 的 DepGraphL0 + 原始碼用 regex 提取可測函式
-- 支援 .py/.go/.js/.ts，識別 function/method signature
-- 輸入資料（來自 RepoIngestion）：
-    - DepGraphL0: nodes(DepNode[]) + edges(DepEdge[])
-    - DepNode: node_id, path, kind
-    - DepEdge: src, dst, kind, confidence
+**Phase 1：File Filter**
+- 從 DepGraph 過濾目標語言檔案（.py/.go/.js/.ts）
+- 讀取檔案內容，產出 `list[SourceFile]`
 
 **Phase 2：LLM 生成測試指引（Guidance）**
-- LLM 分析每個模組原始碼，產出結構化 JSON 指引
-- 內容：副作用識別（file I/O, network, DB）、mock 建議、非確定性行為（時間戳、隨機數）、外部依賴
+- LLM 讀整個檔案原始碼，產出結構化 JSON 指引
+- 內容：副作用識別、mock 建議、非確定性行為、外部依賴
 
-**Phase 3：LLM 生成測試輸入（Input Gen）**
-- LLM 讀 function signature + docstring + guidance → 產生測試案例
-- 每個 entry 至少 3 筆：正常路徑、邊界值、錯誤處理
-
-**Phase 3b：Golden Capture**
-- LLM 生成可執行 Python 腳本（處理 class 實例化、mock 副作用依賴）
+**Phase 3：Golden Capture（file 級別）**
+- LLM 生成每個檔案的呼叫腳本（呼叫所有 public function）
 - subprocess 執行舊 code，捕獲 stdout 作為 golden output
 
-**Phase 4：Golden Comparison（迭代時才執行）**
-- 用同樣 inputs 跑重構後 code，normalize 後 diff 新舊輸出
-- OutputNormalizer 清洗時間戳、UUID 等非確定性欄位
+**Phase 4：Test Code Emitter**
+- LLM 讀整個檔案 + guidance + golden output → 直接生成完整 test file
+- LLM 自行決定測哪些函式、用什麼 input、assert 什麼
 
-**Phase 5：Test Code Emitter**
-- LLM 根據 TestInput + GoldenRecord 產出目標語言的可執行測試檔（pytest/go test/jest）
-
-**Phase 5b：Test Runner（執行 Unit Tests）**
+**Phase 5：Test Runner**
 - subprocess 跑 pytest 執行 emitted 測試檔案
 - 收集 pass/fail 數量 + pytest-cov coverage 百分比
 
-**Phase 6：Report Builder**
-- 合併 golden comparison results + unit test results
-- 統計 pass/fail/error/skipped + pass_rate + coverage_pct
+**Golden Comparison（迭代時才執行）**
+- 用同樣腳本跑重構後 code，normalize 後 diff 新舊輸出
+- OutputNormalizer 清洗時間戳、UUID 等非確定性欄位
+
+**Report Builder**
+- 彙總 golden comparison results → OverallTestReport
 
 #### 對外 API
 ```python
-from runner.test_gen import run_test_generation
+from runner.test_gen import run_overall_test, run_module_test
 
-report = run_test_generation(
-    run_id="some_run_id",
+# API 1: 整體 golden test
+overall_report = run_overall_test(
+    run_id="abc123",
     repo_dir=Path("path/to/legacy/code"),
-    dep_graph=dep_graph,            # RepoIngestion 的 DepGraphL0
-    repo_index=repo_index,          # RepoIngestion 的 RepoIndex
-    exec_matrix=exec_matrix,        # RepoIngestion 的 ExecMatrix
+    dep_graph=dep_graph,              # DepGraph
+    repo_index=repo_index,            # RepoIndex
+    llm_client=llm_client,            # VertexLLMClient 或 None
     artifacts_root=Path("artifacts"),
-    llm_client=llm_client,          # VertexLLMClient 或 None
-    iteration=0,                    # 0=迭代前, 1+=迭代中
-    refactored_repo_dir=None,       # 迭代時傳入重構後目錄
-    target_language="python",       # python/go/typescript
+    target_language="python",
+    refactored_repo_dir=None,         # 迭代時傳入
 )
-# report.total, report.passed, report.failed, report.pass_rate
-# report.coverage_pct, report.unit_test_results, report.results
-# report.emitted_files
+# overall_report.golden_snapshot, .comparison_results, .pass_rate
+
+# API 2: 單一 module unit test
+module_report = run_module_test(
+    run_id="abc123",
+    repo_dir=Path("path/to/legacy/code"),
+    file_path="src/moduleA.py",       # 從 Stage Plan 拿到
+    llm_client=llm_client,
+    artifacts_root=Path("artifacts"),
+    target_language="python",
+    refactored_repo_dir=None,         # 重構後傳入
+)
+# module_report.can_test, .emitted_file, .baseline_result,
+# .refactored_result, .coverage_pct
 ```
 
 #### Artifact 輸出
 ```
 artifacts/<run_id>/test_gen/
-├── entries.json           # Phase 1: 可測 entry points
-├── guidance.json          # Phase 2: 測試指引
-├── inputs.json            # Phase 3: 測試輸入
-├── golden_snapshot.json   # Phase 3b: golden output
-├── test_report.json       # Phase 6: 最終報告
-└── emitted/               # Phase 5: 可執行測試檔
+├── source_files.json      # Phase 1: 過濾後的來源檔案
+├── guidance.json           # Phase 2: 測試指引
+├── golden_snapshot.json    # Phase 3: golden output
+├── overall_report.json     # Overall test 報告
+├── module_report_*.json    # Module test 報告
+└── emitted/                # Phase 4: 可執行測試檔
     ├── test_sensor.py
     └── ...
 ```
 
-#### 待優化
-- coverage 目標門檻設定（配合整體 75% 要求）
-- 針對不同語言特性的測試優化（型別系統、錯誤處理模式）
-- 整合 git diff 資訊輔助精準測試
+#### Artifact JSON 格式說明
+
+**source_files.json** — 從 DepGraph 過濾出的目標語言檔案（只存路徑，不存內容）
+```json
+{ "files": [
+    { "path": "Python/Leaderboard/leaderboard.py",
+      "lang": "python" }
+]}
+```
+- 檔案內容透過 `SourceFile.read_content(repo_dir)` 按需從磁碟讀取
+
+**guidance.json** — LLM 分析每個檔案產出的測試指引（stub mode 時為空值）
+```json
+{ "guidances": [
+    { "module_path": "Python/Leaderboard/leaderboard.py",
+      "side_effects": [],
+      "mock_recommendations": [],
+      "nondeterminism_notes": null,
+      "external_deps": [] }
+]}
+```
+
+**golden_snapshot.json** — 執行舊 code 的 golden baseline 輸出
+```json
+{ "records": [
+    { "file_path": "Python/Leaderboard/leaderboard.py",
+      "output": { ... },
+      "exit_code": 0,
+      "stderr_snippet": null,
+      "duration_ms": 120 }
+]}
+```
+- `exit_code=0` 正常，`1` 表示腳本執行失敗，`-1` 表示 timeout 或例外
+- `output` 為 JSON 物件（成功時）或 null（失敗時）
+
+**overall_report.json** — `run_overall_test()` 的最終報告
+```json
+{ "run_id": "f3f7...",
+  "golden_snapshot": { "records": [...] },
+  "comparison_results": [],
+  "pass_rate": 0.0 }
+```
+- `comparison_results` 迭代前為空，迭代時包含每個檔案的 PASS/FAIL/ERROR/SKIPPED
+- `pass_rate` 迭代前為 0.0（無比較對象）
+
+**module_report_*.json** — `run_module_test()` 的單模組報告
+```json
+{ "run_id": "f3f7...",
+  "file_path": "Python/.../sensor.py",
+  "can_test": true,
+  "emitted_file": { "path": "test_sensor.py", "language": "python", "content": "..." },
+  "baseline_result": { "total": 3, "passed": 2, "failed": 1, "coverage_pct": 80.0 },
+  "refactored_result": null,
+  "coverage_pct": null }
+```
+- `can_test=false` 時其餘欄位皆為 null
+- `refactored_result` 只在傳入 `refactored_repo_dir` 時才有值
 ## 迭代 Pipeline(尚未實作)
 - Package : LanGraph
 Iterative Loop：Analyze → Plan → Apply → Validate → Report → Decide → 下一輪/停止
@@ -181,20 +246,16 @@ Iterative Loop：Analyze → Plan → Apply → Validate → Report → Decide �
 #   實作更新
 模組實作：
 
-- `runner/test_gen/__init__.py` — 匯出 `run_test_generation`
-- `runner/test_gen/entry_detector.py` — Phase 1: regex 提取可測函式（支援 .py/.go/.js/.ts）
+- `runner/test_gen/__init__.py` — 匯出 `run_overall_test`, `run_module_test`
+- `runner/test_gen/main.py` — Orchestrator，提供兩個 API
+- `runner/test_gen/file_filter.py` — Phase 1: 從 DepGraph 過濾目標語言檔案
 - `runner/test_gen/guidance_gen.py` — Phase 2: LLM 生成測試指引
-- `runner/test_gen/input_gen.py` — Phase 3: LLM 生成測試輸入
-- `runner/test_gen/golden_capture.py` — Phase 3b: LLM 生成呼叫腳本 + subprocess 捕獲 golden output
+- `runner/test_gen/golden_capture.py` — Phase 3: LLM 生成呼叫腳本 + subprocess 捕獲 golden output（file 級別）
+- `runner/test_gen/test_emitter.py` — Phase 4: LLM 讀整個檔案生成完整 test file
+- `runner/test_gen/test_runner.py` — Phase 5: subprocess 跑 pytest 收集 pass/fail + coverage
+- `runner/test_gen/golden_comparator.py` — Golden Comparison: normalize 後 diff 新舊輸出
 - `runner/test_gen/output_normalizer.py` — 清洗時間戳/UUID 等非確定性欄位
-- `runner/test_gen/golden_comparator.py` — Phase 4: normalize 後 diff 新舊輸出
-- `runner/test_gen/test_emitter.py` — Phase 5: 產出可執行測試檔（pytest/go test/jest）
-- `runner/test_gen/test_runner.py` — Phase 5b: subprocess 跑 pytest 收集 pass/fail + coverage
-- `runner/test_gen/report_builder.py` — Phase 6: 統計 pass/fail/coverage
-- `runner/test_gen/main.py` — Orchestrator，串接所有 phase
+- `runner/test_gen/report_builder.py` — 彙總報告
 - `runner/test_gen/llm_adapter.py` — Vertex AI Gemini LLM client
-- `shared/test_types.py` — 所有測試相關 Pydantic models
+- `shared/test_types.py` — 所有測試相關 Pydantic models（SourceFile, GoldenRecord, OverallTestReport, ModuleTestReport 等）
 - `scripts/smoke_test_gen.py` — 開發用 smoke test（正式串接後不需要）
-
-修改既有檔案：
-- `core/storage/artifacts.py` — `ensure_run_layout` 新增 `test_gen` 和 `test_gen/emitted` 子目錄

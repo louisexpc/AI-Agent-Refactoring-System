@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import warnings
 from pathlib import Path
@@ -18,12 +17,10 @@ repo_root = Path(__file__).resolve().parents[1]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from runner.test_gen import run_test_generation  # noqa: E402
+from runner.test_gen import run_module_test, run_overall_test  # noqa: E402
 from shared.ingestion_types import (  # noqa: E402
-    DepEdge,
-    DepGraphL0,
+    DepGraph,
     DepNode,
-    ExecMatrix,
     RepoIndex,
 )
 
@@ -45,23 +42,24 @@ def main() -> None:
     artifacts_root = repo_root / "artifacts"
 
     # 模擬上游 ingestion 產出的資料
-    dep_graph = DepGraphL0(
+    dep_graph = DepGraph(
         nodes=[
-            DepNode(node_id="sensor.py", path="sensor.py", kind="file"),
+            DepNode(
+                node_id="sensor.py",
+                path="sensor.py",
+                kind="file",
+                lang="python",
+                ext=".py",
+            ),
             DepNode(
                 node_id="tire_pressure_monitoring.py",
                 path="tire_pressure_monitoring.py",
                 kind="file",
+                lang="python",
+                ext=".py",
             ),
         ],
-        edges=[
-            DepEdge(
-                src="tire_pressure_monitoring.py",
-                dst="sensor.py",
-                kind="import",
-                confidence=1.0,
-            ),
-        ],
+        edges=[],
     )
 
     repo_index = RepoIndex(
@@ -71,8 +69,6 @@ def main() -> None:
         files=[],
         indicators=["pytest"],
     )
-
-    exec_matrix = ExecMatrix(scopes=[])
 
     # LLM client
     llm_client = None
@@ -85,114 +81,66 @@ def main() -> None:
 
     run_id = "smoke_legacy_llm" if args.llm else "smoke_legacy_test"
 
-    print("Running test_gen pipeline on LegacyCode...")
+    # --- API 1: run_overall_test ---
+    print("=" * 60)
+    print("API 1: run_overall_test()")
+    print("=" * 60)
     print(f"  repo_dir:   {legacy_dir}")
     print(f"  llm:        {'Vertex AI Gemini' if args.llm else 'None (stub)'}")
-    print(f"  artifacts:  {artifacts_root / run_id / 'test_gen'}")
     print()
 
-    report = run_test_generation(
+    overall_report = run_overall_test(
         run_id=run_id,
         repo_dir=legacy_dir,
         dep_graph=dep_graph,
         repo_index=repo_index,
-        exec_matrix=exec_matrix,
-        artifacts_root=artifacts_root,
         llm_client=llm_client,
-        iteration=0,
+        artifacts_root=artifacts_root,
+        target_language="python",
     )
 
-    # 印出結果
-    test_gen_dir = artifacts_root / run_id / "test_gen"
+    print(f"Golden records: {len(overall_report.golden_snapshot.records)}")
+    for rec in overall_report.golden_snapshot.records:
+        status = "OK" if rec.exit_code == 0 else f"FAIL(exit={rec.exit_code})"
+        output_str = str(rec.output)[:80] if rec.output else "(none)"
+        print(f"  - {rec.file_path}: {status} -> {output_str}")
+    print(f"Pass rate: {overall_report.pass_rate}")
 
-    entries = json.loads((test_gen_dir / "entries.json").read_text())
-    inputs_data = json.loads((test_gen_dir / "inputs.json").read_text())
-    golden = json.loads((test_gen_dir / "golden_snapshot.json").read_text())
-    guidance = json.loads((test_gen_dir / "guidance.json").read_text())
+    # --- API 2: run_module_test ---
+    print()
+    print("=" * 60)
+    print("API 2: run_module_test()")
+    print("=" * 60)
 
-    print("=== Phase 1: Entry Detection ===")
-    print(f"Entries detected: {len(entries['entries'])}")
-    for e in entries["entries"]:
-        print(f"  - {e['entry_id']} (sig: {e['signature']})")
+    module_report = run_module_test(
+        run_id=run_id,
+        repo_dir=legacy_dir,
+        file_path="tire_pressure_monitoring.py",
+        llm_client=llm_client,
+        artifacts_root=artifacts_root,
+        target_language="python",
+    )
 
-    print("\n=== Phase 2: Guidance ===")
-    for g in guidance["guidances"]:
-        print(f"  - {g['module_path']}")
-        if g["side_effects"]:
-            print(f"    side_effects: {g['side_effects']}")
-        if g["mock_recommendations"]:
-            print(f"    mock: {g['mock_recommendations']}")
-        if g["nondeterminism_notes"]:
-            print(f"    nondeterminism: {g['nondeterminism_notes']}")
-
-    print("\n=== Phase 3: Test Inputs ===")
-    print(f"Inputs generated: {len(inputs_data['inputs'])}")
-    for inp in inputs_data["inputs"]:
-        print(f"  - {inp['entry_id']}: {inp['description']}")
-        if inp["args"]:
-            print(f"    args: {json.dumps(inp['args'])}")
-
-    print("\n=== Phase 3b: Golden Capture ===")
-    print(f"Golden records: {len(golden['records'])}")
-    for rec in golden["records"]:
-        status = "OK" if rec["exit_code"] == 0 else f"FAIL(exit={rec['exit_code']})"
-        output_str = str(rec["output"])[:80] if rec["output"] else "(none)"
-        print(f"  - {rec['entry_id']}: {status} -> {output_str}")
-
-    # --- Generate Markdown Report ---
-    md_lines = []
-    md_lines.append(f"# Test Generation Report: {run_id}")
-    md_lines.append(f"- **Date**: {run_id}")
-    md_lines.append(f"- **LLM**: {'Vertex AI Gemini' if args.llm else 'None (stub)'}")
-    md_lines.append(f"- **Target**: {legacy_dir.name}")
-    md_lines.append("")
-
-    md_lines.append("## Summary")
-    md_lines.append("| Metric | Count |")
-    md_lines.append("| :--- | :--- |")
-    md_lines.append(f"| Total Tests | {report.total} |")
-    md_lines.append(f"| Passed | {report.passed} |")
-    md_lines.append(f"| Failed | {report.failed} |")
-    md_lines.append(f"| Skipped | {report.skipped} |")
-    md_lines.append("")
-
-    md_lines.append("## Failure Details")
-    if report.failed == 0:
-        md_lines.append("🎉 No failures detected.")
-    else:
-        for rec in golden["records"]:
-            if rec["exit_code"] != 0:
-                md_lines.append(f"### ❌ {rec['entry_id']}")
-                md_lines.append(f"- **Exit Code**: {rec['exit_code']}")
-                md_lines.append("```text")
-                md_lines.append(
-                    str(rec["output"])[:500]
-                    + ("..." if len(str(rec["output"])) > 500 else "")
-                )
-                md_lines.append("```")
-
-    report_md_path = test_gen_dir / "report.md"
-    report_md_path.write_text("\n".join(md_lines), encoding="utf-8")
-    print(f"\n[Report] Markdown report generated at: {report_md_path}")
-    # --------------------------------
-
-    print("\n=== Phase 5: Emitted Test Files ===")
-    print(f"Emitted files: {len(report.emitted_files)}")
-    for ef in report.emitted_files:
-        print(f"\n  --- {ef.path} ---")
-        # 印前 20 行
-        lines = ef.content.split("\n")[:20]
+    print(f"  file_path: {module_report.file_path}")
+    print(f"  can_test:  {module_report.can_test}")
+    if module_report.emitted_file:
+        print(f"  test_file: {module_report.emitted_file.path}")
+        # 印前 10 行
+        lines = module_report.emitted_file.content.split("\n")[:10]
         for line in lines:
             print(f"    {line}")
-        if len(ef.content.split("\n")) > 20:
-            print(f"    ... ({len(ef.content.split(chr(10)))} lines total)")
+    if module_report.baseline_result:
+        br = module_report.baseline_result
+        print(
+            f"  baseline:  total={br.total} passed={br.passed} "
+            f"failed={br.failed} coverage={br.coverage_pct}"
+        )
+    print(f"  coverage:  {module_report.coverage_pct}")
 
-    print("\n=== Report ===")
-    print(
-        f"total={report.total}, passed={report.passed}, "
-        f"failed={report.failed}, skipped={report.skipped}"
-    )
-    print("\nDone.")
+    print()
+    test_gen_dir = artifacts_root / run_id / "test_gen"
+    print(f"Artifacts at: {test_gen_dir}")
+    print("Done.")
 
 
 if __name__ == "__main__":

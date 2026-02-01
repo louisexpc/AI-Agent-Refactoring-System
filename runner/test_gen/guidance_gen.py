@@ -1,17 +1,15 @@
 """Phase 2：LLM 生成測試指引文件。
 
-針對每個模組，讓 LLM 分析原始碼並產出測試時需注意的
+針對每個來源檔案，讓 LLM 分析原始碼並產出測試時需注意的
 副作用、mock 建議、非確定性行為等指引。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Protocol
 
-from shared.ingestion_types import DepGraphL0, RepoIndex
-from shared.test_types import TestGuidance, TestGuidanceIndex
+from shared.test_types import SourceFile, TestGuidance, TestGuidanceIndex
 
 
 class LLMClient(Protocol):
@@ -60,49 +58,59 @@ class TestGuidanceGenerator:
     當 ``llm_client`` 為 None 時，回傳空指引（供無 LLM 環境測試）。
 
     Args:
-        repo_dir: snapshot 中的 repo 目錄。
         llm_client: LLM 呼叫介面，None 表示使用 stub。
     """
 
-    repo_dir: Path
     llm_client: Any = None
+    repo_dir: Any = None
 
-    def build(
+    def build_for_files(
         self,
-        dep_graph: DepGraphL0,
-        repo_index: RepoIndex,
+        source_files: list[SourceFile],
     ) -> TestGuidanceIndex:
-        """為每個模組生成測試指引。
+        """為每個來源檔案生成測試指引。
 
         Args:
-            dep_graph: L0 依賴圖。
-            repo_index: 檔案索引。
+            source_files: 來源檔案清單。
 
         Returns:
             所有模組的測試指引索引。
         """
         guidances: list[TestGuidance] = []
 
-        for node in dep_graph.nodes:
-            file_path = self.repo_dir / node.path
-            if not file_path.is_file():
-                continue
-
+        for sf in source_files:
             if self.llm_client is None:
-                # Stub：回傳空指引
-                guidances.append(TestGuidance(module_path=node.path))
+                guidances.append(TestGuidance(module_path=sf.path))
                 continue
 
-            source = file_path.read_text(encoding="utf-8", errors="replace")
             prompt = GUIDANCE_PROMPT_TEMPLATE.format(
-                module_path=node.path,
-                source_code=source,
+                module_path=sf.path,
+                source_code=sf.read_content(self.repo_dir),
             )
             response = self.llm_client.generate(prompt)
-            guidance = self._parse_response(node.path, response)
+            guidance = self._parse_response(sf.path, response)
             guidances.append(guidance)
 
         return TestGuidanceIndex(guidances=guidances)
+
+    def build_for_single(self, source_file: SourceFile) -> TestGuidance:
+        """為單一來源檔案生成測試指引。
+
+        Args:
+            source_file: 來源檔案。
+
+        Returns:
+            測試指引。
+        """
+        if self.llm_client is None:
+            return TestGuidance(module_path=source_file.path)
+
+        prompt = GUIDANCE_PROMPT_TEMPLATE.format(
+            module_path=source_file.path,
+            source_code=source_file.read_content(self.repo_dir),
+        )
+        response = self.llm_client.generate(prompt)
+        return self._parse_response(source_file.path, response)
 
     def _parse_response(self, module_path: str, response: str) -> TestGuidance:
         """解析 LLM 回應為 TestGuidance。

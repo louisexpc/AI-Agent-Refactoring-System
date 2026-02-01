@@ -1,10 +1,10 @@
 """Generate Test 模組的型別定義。
 
 定義測試生成流程中所有階段的資料模型，包含：
-- 可測試 entry point 識別
+- 來源檔案識別
 - LLM 測試指引
-- 測試輸入 / golden output
-- 比較結果與報告
+- Golden output 記錄與比較
+- 單元測試結果與報告
 """
 
 from __future__ import annotations
@@ -14,31 +14,41 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+# ---------------------------------------------------------------------------
+# Source File（Phase 1: File Filter 輸出）
+# ---------------------------------------------------------------------------
 
-class TestableEntry(BaseModel):
-    """從 DepGraph 中識別出的可測試函式或端點。
+
+class SourceFile(BaseModel):
+    """從 DepGraph 過濾後的來源檔案。
 
     Attributes:
-        entry_id: 唯一識別碼，格式如 ``src/auth.py::login``。
-        module_path: 所屬檔案路徑。
-        function_name: 函式或方法名稱。
-        signature: 參數型別簽名（若可取得）。
-        docstring: 函式 docstring。
-        dep_node_id: 對應 DepNode 的 node_id。
+        path: 檔案相對路徑（相對於 repo root）。
+        lang: 語言識別（python, go, javascript, typescript）。
     """
 
-    entry_id: str
-    module_path: str
-    function_name: str
-    signature: str | None = None
-    docstring: str | None = None
-    dep_node_id: str | None = None
+    path: str
+    lang: str
+
+    def read_content(self, repo_dir: Any) -> str:
+        """從磁碟讀取檔案內容。
+
+        Args:
+            repo_dir: repo 根目錄（Path 或 str）。
+
+        Returns:
+            檔案完整原始碼。
+        """
+        from pathlib import Path as _Path
+
+        return (_Path(repo_dir) / self.path).read_text(
+            encoding="utf-8", errors="replace"
+        )
 
 
-class EntryIndex(BaseModel):
-    """所有可測試 entry point 的索引。"""
-
-    entries: list[TestableEntry] = Field(default_factory=list)
+# ---------------------------------------------------------------------------
+# Guidance（Phase 2: LLM 測試指引）
+# ---------------------------------------------------------------------------
 
 
 class TestGuidance(BaseModel):
@@ -67,42 +77,23 @@ class TestGuidanceIndex(BaseModel):
     guidances: list[TestGuidance] = Field(default_factory=list)
 
 
-class TestInput(BaseModel):
-    """單一測試案例的輸入資料。
-
-    Attributes:
-        input_id: 測試輸入唯一識別碼。
-        entry_id: 對應的 TestableEntry entry_id。
-        args: 函式呼叫參數（key-value）。
-        description: 此測試案例的簡述。
-    """
-
-    input_id: str
-    entry_id: str
-    args: dict[str, Any] = Field(default_factory=dict)
-    description: str | None = None
-
-
-class TestInputSet(BaseModel):
-    """一組測試輸入資料。"""
-
-    inputs: list[TestInput] = Field(default_factory=list)
+# ---------------------------------------------------------------------------
+# Golden Record（Phase 3: Golden Capture 輸出）
+# ---------------------------------------------------------------------------
 
 
 class GoldenRecord(BaseModel):
-    """舊程式碼對某筆測試輸入的執行結果（標準答案）。
+    """舊程式碼對某個檔案的執行結果（標準答案）。
 
     Attributes:
-        input_id: 對應 TestInput 的 input_id。
-        entry_id: 對應 TestableEntry 的 entry_id。
-        output: 捕獲的輸出（return value / stdout 序列化）。
+        file_path: 來源檔案路徑。
+        output: 捕獲的輸出（stdout 序列化）。
         exit_code: 程式結束碼。
         stderr_snippet: stderr 片段。
         duration_ms: 執行時間（毫秒）。
     """
 
-    input_id: str
-    entry_id: str
+    file_path: str
     output: Any = None
     exit_code: int | None = None
     stderr_snippet: str | None = None
@@ -113,6 +104,11 @@ class GoldenSnapshot(BaseModel):
     """所有 golden record 的集合。"""
 
     records: list[GoldenRecord] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Golden Comparison（Phase 6 / 迭代時）
+# ---------------------------------------------------------------------------
 
 
 class ComparisonVerdict(str, Enum):
@@ -128,20 +124,23 @@ class ComparisonResult(BaseModel):
     """新舊程式碼單筆輸出的比較結果。
 
     Attributes:
-        input_id: 對應 TestInput 的 input_id。
-        entry_id: 對應 TestableEntry 的 entry_id。
+        file_path: 來源檔案路徑。
         verdict: 判定結果。
         expected_output: golden（舊）的輸出。
         actual_output: 重構後（新）的輸出。
         diff_summary: 差異摘要。
     """
 
-    input_id: str
-    entry_id: str
+    file_path: str
     verdict: ComparisonVerdict
     expected_output: Any = None
     actual_output: Any = None
     diff_summary: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Emitted Test File（Phase 4: Test Emitter 輸出）
+# ---------------------------------------------------------------------------
 
 
 class EmittedTestFile(BaseModel):
@@ -151,13 +150,18 @@ class EmittedTestFile(BaseModel):
         path: 測試檔案相對路徑。
         language: 目標語言（python、go、typescript 等）。
         content: 測試原始碼內容。
-        entry_ids: 此檔案涵蓋的 entry_id 清單。
+        source_file: 對應的來源檔案路徑。
     """
 
     path: str
     language: str
     content: str
-    entry_ids: list[str] = Field(default_factory=list)
+    source_file: str
+
+
+# ---------------------------------------------------------------------------
+# Unit Test Result（Phase 5: Test Runner 輸出）
+# ---------------------------------------------------------------------------
 
 
 class UnitTestResult(BaseModel):
@@ -186,32 +190,44 @@ class UnitTestResult(BaseModel):
     exit_code: int | None = None
 
 
-class TestReport(BaseModel):
-    """測試生成模組的最終報告。
+# ---------------------------------------------------------------------------
+# Reports（API 輸出）
+# ---------------------------------------------------------------------------
+
+
+class OverallTestReport(BaseModel):
+    """run_overall_test 的輸出報告。
 
     Attributes:
         run_id: 所屬 run 的識別碼。
-        iteration: 迭代輪次（0 表示迭代前）。
-        total: 測試案例總數。
-        passed: 通過數。
-        failed: 失敗數。
-        errored: 錯誤數。
-        skipped: 跳過數。
+        golden_snapshot: golden baseline 記錄。
+        comparison_results: 新舊比較結果（迭代時才有）。
         pass_rate: 通過率（0.0 ~ 1.0）。
-        coverage_pct: 行覆蓋率百分比。
-        results: 每筆比較結果。
-        emitted_files: 產出的測試檔案。
     """
 
     run_id: str
-    iteration: int = 0
-    total: int = 0
-    passed: int = 0
-    failed: int = 0
-    errored: int = 0
-    skipped: int = 0
+    golden_snapshot: GoldenSnapshot = Field(default_factory=GoldenSnapshot)
+    comparison_results: list[ComparisonResult] = Field(default_factory=list)
     pass_rate: float = 0.0
+
+
+class ModuleTestReport(BaseModel):
+    """run_module_test 的輸出報告。
+
+    Attributes:
+        run_id: 所屬 run 的識別碼。
+        file_path: 被測的來源檔案路徑。
+        can_test: LLM 判斷此 module 能否生成 unit test。
+        emitted_file: 生成的測試檔。
+        baseline_result: 舊 code 跑的 unit test 結果。
+        refactored_result: 新 code 跑的 unit test 結果。
+        coverage_pct: 行覆蓋率。
+    """
+
+    run_id: str
+    file_path: str
+    can_test: bool = False
+    emitted_file: EmittedTestFile | None = None
+    baseline_result: UnitTestResult | None = None
+    refactored_result: UnitTestResult | None = None
     coverage_pct: float | None = None
-    results: list[ComparisonResult] = Field(default_factory=list)
-    unit_test_results: list[UnitTestResult] = Field(default_factory=list)
-    emitted_files: list[EmittedTestFile] = Field(default_factory=list)

@@ -1,6 +1,6 @@
-"""Phase 4：比較 golden output 與重構後程式碼的輸出。
+"""Golden Comparison：比較 golden output 與重構後程式碼的輸出。
 
-對每筆 TestInput，在重構後的程式碼上執行，
+對每個來源檔案，在重構後的程式碼上執行相同的 golden 腳本，
 再與 golden output 比較，判定 PASS/FAIL/ERROR/SKIPPED。
 """
 
@@ -16,7 +16,7 @@ from shared.test_types import (
     ComparisonVerdict,
     GoldenRecord,
     GoldenSnapshot,
-    TestInput,
+    SourceFile,
 )
 
 
@@ -43,50 +43,49 @@ class GoldenComparator:
 
     def run(
         self,
-        inputs: list[TestInput],
+        source_files: list[SourceFile],
         golden: GoldenSnapshot,
     ) -> list[ComparisonResult]:
         """執行重構後程式碼並與 golden 比較。
 
         Args:
-            inputs: 測試輸入清單。
+            source_files: 來源檔案清單。
             golden: 舊程式碼的 golden output。
 
         Returns:
-            每筆測試的比較結果。
+            每個檔案的比較結果。
         """
-        golden_map: dict[str, GoldenRecord] = {r.input_id: r for r in golden.records}
+        golden_map: dict[str, GoldenRecord] = {r.file_path: r for r in golden.records}
 
-        # 在重構後的 repo 上執行相同的測試輸入
         capture = GoldenCaptureRunner(
             repo_dir=self.refactored_repo_dir,
             logs_dir=self.logs_dir / "refactored",
             timeout_sec=self.timeout_sec,
         )
-        actual_snapshot = capture.run(inputs)
+        actual_snapshot = capture.run(source_files)
         actual_map: dict[str, GoldenRecord] = {
-            r.input_id: r for r in actual_snapshot.records
+            r.file_path: r for r in actual_snapshot.records
         }
 
         results: list[ComparisonResult] = []
-        for test_input in inputs:
-            expected = golden_map.get(test_input.input_id)
-            actual = actual_map.get(test_input.input_id)
-            result = self._compare_one(test_input, expected, actual)
+        for sf in source_files:
+            expected = golden_map.get(sf.path)
+            actual = actual_map.get(sf.path)
+            result = self._compare_one(sf.path, expected, actual)
             results.append(result)
 
         return results
 
     def _compare_one(
         self,
-        test_input: TestInput,
+        file_path: str,
         expected: GoldenRecord | None,
         actual: GoldenRecord | None,
     ) -> ComparisonResult:
         """比較單筆測試結果。
 
         Args:
-            test_input: 測試輸入。
+            file_path: 檔案路徑。
             expected: golden（舊）的輸出。
             actual: 重構後（新）的輸出。
 
@@ -95,33 +94,30 @@ class GoldenComparator:
         """
         if expected is None:
             return ComparisonResult(
-                input_id=test_input.input_id,
-                entry_id=test_input.entry_id,
+                file_path=file_path,
                 verdict=ComparisonVerdict.SKIPPED,
                 diff_summary="no golden record found",
             )
 
         if actual is None:
             return ComparisonResult(
-                input_id=test_input.input_id,
-                entry_id=test_input.entry_id,
+                file_path=file_path,
                 verdict=ComparisonVerdict.ERROR,
                 expected_output=expected.output,
                 diff_summary="no actual output captured",
             )
 
-        # 檢查 exit code
         if actual.exit_code != 0 and expected.exit_code == 0:
             return ComparisonResult(
-                input_id=test_input.input_id,
-                entry_id=test_input.entry_id,
+                file_path=file_path,
                 verdict=ComparisonVerdict.ERROR,
                 expected_output=expected.output,
                 actual_output=actual.output,
-                diff_summary=f"exit code mismatch: expected 0, got {actual.exit_code}",
+                diff_summary=(
+                    f"exit code mismatch: expected 0, got {actual.exit_code}"
+                ),
             )
 
-        # 正規化後比較
         assert self.normalizer is not None
         norm_expected = self.normalizer.normalize(expected.output)
         norm_actual = self.normalizer.normalize(actual.output)
@@ -134,8 +130,7 @@ class GoldenComparator:
             diff_summary = self._build_diff_summary(norm_expected, norm_actual)
 
         return ComparisonResult(
-            input_id=test_input.input_id,
-            entry_id=test_input.entry_id,
+            file_path=file_path,
             verdict=verdict,
             expected_output=expected.output,
             actual_output=actual.output,

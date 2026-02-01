@@ -1,8 +1,7 @@
-"""Phase 5：產出目標語言的可執行測試原始碼。
+"""Phase 4：產出目標語言的可執行測試原始碼（file 級別）。
 
-根據 TestInput 與 GoldenRecord，讓 LLM 生成
-目標語言的測試檔案（pytest / go test / jest 等），
-使評審可實際執行並量測 coverage。
+LLM 讀整個來源檔案 + guidance + golden output，
+直接生成完整的測試檔（pytest / go test / jest）。
 """
 
 from __future__ import annotations
@@ -15,36 +14,47 @@ from typing import Any
 from shared.test_types import (
     EmittedTestFile,
     GoldenRecord,
-    GoldenSnapshot,
-    TestGuidanceIndex,
-    TestInput,
+    SourceFile,
+    TestGuidance,
 )
 
 EMIT_PROMPT_TEMPLATE: str = """\
-You are a senior test engineer. Generate {language} test source code
-based on the following information.
+You are a senior test engineer. Generate a complete {language} test file
+for the following source code.
 
-Target function: {function_name}
 File path: {module_path}
-Signature: {signature}
 
-Test cases:
-{test_cases_json}
+Source code:
+```
+{source_code}
+```
+
+Testing guidance:
+- Side effects: {side_effects}
+- Mock recommendations: {mock_recommendations}
+- Nondeterminism notes: {nondeterminism_notes}
+
+Golden output (expected behavior of the original code):
+{golden_output}
 
 Requirements:
 1. Use the standard test framework for {language}
    (Python: pytest, Go: testing, TypeScript: jest)
-2. Each test case should correspond to one test function
-3. Use the golden output as the expected value in assertions
-4. Do NOT include markdown code fences, return raw source code only
+2. Decide which functions/classes are worth testing
+3. Generate test inputs: normal path, boundary values, error handling
+4. Use the golden output as reference for expected values where applicable
+5. Mock any side effects (file I/O, network, DB) as indicated in guidance
+6. Do NOT include markdown code fences, return raw source code only
+7. The test file must be self-contained and runnable
 """
 
 
 @dataclass
 class TestCodeEmitter:
-    """將測試資料轉為可執行測試原始碼。
+    """將來源檔案轉為可執行測試原始碼（file 級別）。
 
-    當 ``llm_client`` 為 None 時，使用模板生成基礎測試程式碼。
+    LLM 讀整個檔案後自行決定測哪些函式、用什麼 input。
+    無 LLM 時使用模板生成基礎測試框架。
 
     Args:
         target_language: 目標語言（python、go、typescript）。
@@ -53,157 +63,133 @@ class TestCodeEmitter:
 
     target_language: str = "python"
     llm_client: Any = None
+    repo_dir: Any = None
 
-    def emit(
+    def emit_for_file(
         self,
-        inputs: list[TestInput],
-        golden: GoldenSnapshot,
-        guidance_index: TestGuidanceIndex | None = None,
-    ) -> list[EmittedTestFile]:
-        """生成可執行測試檔案。
+        source_file: SourceFile,
+        guidance: TestGuidance | None = None,
+        golden_record: GoldenRecord | None = None,
+    ) -> EmittedTestFile:
+        """為單一來源檔案生成測試檔。
 
         Args:
-            inputs: 測試輸入清單。
-            golden: golden output 集合。
-            guidance_index: 測試指引索引（可選）。
+            source_file: 來源檔案。
+            guidance: 測試指引。
+            golden_record: golden output。
+
+        Returns:
+            產出的測試檔案。
+        """
+        if self.llm_client is not None:
+            return self._emit_with_llm(source_file, guidance, golden_record)
+        return self._emit_with_template(source_file)
+
+    def emit_for_files(
+        self,
+        source_files: list[SourceFile],
+        guidances: dict[str, TestGuidance] | None = None,
+        golden_map: dict[str, GoldenRecord] | None = None,
+    ) -> list[EmittedTestFile]:
+        """為多個來源檔案生成測試檔。
+
+        Args:
+            source_files: 來源檔案清單。
+            guidances: path → TestGuidance 對照。
+            golden_map: path → GoldenRecord 對照。
 
         Returns:
             產出的測試檔案清單。
         """
-        golden_map: dict[str, GoldenRecord] = {r.input_id: r for r in golden.records}
+        results: list[EmittedTestFile] = []
+        for sf in source_files:
+            g = guidances.get(sf.path) if guidances else None
+            gr = golden_map.get(sf.path) if golden_map else None
+            results.append(self.emit_for_file(sf, g, gr))
+        return results
 
-        # 按 module_path 分組
-        groups: dict[str, list[tuple[TestInput, GoldenRecord | None]]] = {}
-        for inp in inputs:
-            entry_parts = inp.entry_id.split("::")
-            module_path = entry_parts[0] if len(entry_parts) > 1 else inp.entry_id
-            record = golden_map.get(inp.input_id)
-            groups.setdefault(module_path, []).append((inp, record))
-
-        files: list[EmittedTestFile] = []
-        for module_path, cases in groups.items():
-            emitted = self._emit_for_module(module_path, cases)
-            if emitted is not None:
-                files.append(emitted)
-
-        return files
-
-    def _emit_for_module(
+    def _emit_with_llm(
         self,
-        module_path: str,
-        cases: list[tuple[TestInput, GoldenRecord | None]],
-    ) -> EmittedTestFile | None:
-        """為單一模組生成測試檔。
-
-        Args:
-            module_path: 模組路徑。
-            cases: 該模組的 (input, golden) 配對清單。
-
-        Returns:
-            EmittedTestFile 或 None（無法生成時）。
-        """
-        entry_ids = list({inp.entry_id for inp, _ in cases})
-
-        if self.llm_client is not None:
-            return self._emit_with_llm(module_path, cases, entry_ids)
-
-        # Stub：使用模板生成
-        return self._emit_with_template(module_path, cases, entry_ids)
-
-    def _emit_with_template(
-        self,
-        module_path: str,
-        cases: list[tuple[TestInput, GoldenRecord | None]],
-        entry_ids: list[str],
+        source_file: SourceFile,
+        guidance: TestGuidance | None,
+        golden_record: GoldenRecord | None,
     ) -> EmittedTestFile:
-        """用模板生成 Python pytest 測試檔（stub 模式）。
+        """用 LLM 生成完整測試檔。
 
         Args:
-            module_path: 模組路徑。
-            cases: 測試案例配對。
-            entry_ids: 涵蓋的 entry_id 清單。
+            source_file: 來源檔案。
+            guidance: 測試指引。
+            golden_record: golden output。
 
         Returns:
             EmittedTestFile。
         """
-        test_path = self._derive_test_path(module_path)
-        lines = [
-            '"""Auto-generated golden master tests."""',
-            "",
-            "import json",
-            "import pytest",
-            "",
-        ]
+        golden_str = "Not available"
+        if golden_record and golden_record.output is not None:
+            golden_str = json.dumps(golden_record.output, indent=2, default=str)
 
-        for inp, golden_rec in cases:
-            func_name = inp.entry_id.split("::")[-1] if "::" in inp.entry_id else "func"
-            test_name = f"test_{func_name}_{inp.input_id[:8]}"
-            expected = (
-                json.dumps(golden_rec.output, default=str) if golden_rec else "None"
-            )
-            lines.append(f"def {test_name}():")
-            lines.append(
-                f'    """Test {func_name} with input: {inp.description or "auto"}."""'
-            )
-            lines.append(f"    # Input: {json.dumps(inp.args)}")
-            lines.append(f"    expected = {expected}")
-            lines.append(f"    # TODO: call {func_name} and assert result == expected")
-            lines.append("    assert expected is not None")
-            lines.append("")
+        prompt = EMIT_PROMPT_TEMPLATE.format(
+            language=self.target_language,
+            module_path=source_file.path,
+            source_code=source_file.read_content(self.repo_dir),
+            side_effects=(
+                ", ".join(guidance.side_effects) if guidance else "none identified"
+            ),
+            mock_recommendations=(
+                ", ".join(guidance.mock_recommendations)
+                if guidance
+                else "none identified"
+            ),
+            nondeterminism_notes=(
+                guidance.nondeterminism_notes if guidance else "none identified"
+            ),
+            golden_output=golden_str,
+        )
 
-        content = "\n".join(lines)
+        response = self.llm_client.generate(prompt)
+
+        # 清除 markdown code fence
+        content = response.strip()
+        if content.startswith("```"):
+            first_newline = content.index("\n")
+            content = content[first_newline + 1 :]
+        if content.endswith("```"):
+            content = content[:-3].strip()
+
+        test_path = self._derive_test_path(source_file.path)
         return EmittedTestFile(
             path=test_path,
             language=self.target_language,
             content=content,
-            entry_ids=entry_ids,
+            source_file=source_file.path,
         )
 
-    def _emit_with_llm(
-        self,
-        module_path: str,
-        cases: list[tuple[TestInput, GoldenRecord | None]],
-        entry_ids: list[str],
-    ) -> EmittedTestFile:
-        """用 LLM 生成測試原始碼。
+    def _emit_with_template(self, source_file: SourceFile) -> EmittedTestFile:
+        """用模板生成基礎測試框架（stub 模式）。
 
         Args:
-            module_path: 模組路徑。
-            cases: 測試案例配對。
-            entry_ids: 涵蓋的 entry_id 清單。
+            source_file: 來源檔案。
 
         Returns:
             EmittedTestFile。
         """
-        test_cases = []
-        for inp, golden_rec in cases:
-            test_cases.append(
-                {
-                    "function": inp.entry_id.split("::")[-1]
-                    if "::" in inp.entry_id
-                    else inp.entry_id,
-                    "args": inp.args,
-                    "expected_output": golden_rec.output if golden_rec else None,
-                    "description": inp.description,
-                }
-            )
-
-        func_name = cases[0][0].entry_id.split("::")[-1] if cases else "unknown"
-        prompt = EMIT_PROMPT_TEMPLATE.format(
-            language=self.target_language,
-            function_name=func_name,
-            module_path=module_path,
-            signature="(see test cases)",
-            test_cases_json=json.dumps(test_cases, indent=2, default=str),
-        )
-        response = self.llm_client.generate(prompt)
-        test_path = self._derive_test_path(module_path)
+        test_path = self._derive_test_path(source_file.path)
+        content = (
+            '"""Auto-generated test stub for {path}."""\n'
+            "\n"
+            "import pytest\n"
+            "\n"
+            "\n"
+            "def test_placeholder():\n"
+            '    """Placeholder test — replace with real assertions."""\n'
+            "    assert True\n"
+        ).format(path=source_file.path)
 
         return EmittedTestFile(
             path=test_path,
             language=self.target_language,
-            content=response,
-            entry_ids=entry_ids,
+            content=content,
+            source_file=source_file.path,
         )
 
     def _derive_test_path(self, module_path: str) -> str:
