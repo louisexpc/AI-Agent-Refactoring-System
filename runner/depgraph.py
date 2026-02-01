@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from shared.ingestion_types import (
     DepDstKind,
@@ -55,6 +55,12 @@ LANG_BY_EXT = {
     ".cc": "cpp",
     ".cpp": "cpp",
     ".hpp": "cpp",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".zsh": "shell",
+    ".yaml": "yaml",
+    ".md": "markdown",
+    ".txt": "plaintext",
 }
 
 QUERY_BY_LANG = {
@@ -63,23 +69,19 @@ QUERY_BY_LANG = {
     (import_from_statement) @from_import
     """,
     "javascript": """
-    (import_statement
-      source: (string (string_fragment) @import_path))
-    (call_expression
-      function: (identifier) @call_name
-      arguments: (arguments (string (string_fragment) @import_path)))
-    (import_call
-      arguments: (arguments (string (string_fragment) @import_path)))
-    """,
+        (import_statement
+            source: (string (string_fragment) @import_path))
+        (call_expression
+            function: (identifier) @call_name
+            arguments: (arguments (string (string_fragment) @import_path)))
+        """,
     "typescript": """
-    (import_statement
-      source: (string (string_fragment) @import_path))
-    (call_expression
-      function: (identifier) @call_name
-      arguments: (arguments (string (string_fragment) @import_path)))
-    (import_call
-      arguments: (arguments (string (string_fragment) @import_path)))
-    """,
+        (import_statement
+            source: (string (string_fragment) @import_path))
+        (call_expression
+            function: (identifier) @call_name
+            arguments: (arguments (string (string_fragment) @import_path)))
+        """,
     "go": """
     (import_spec path: (interpreted_string_literal) @import_path)
     """,
@@ -87,7 +89,7 @@ QUERY_BY_LANG = {
     (import_declaration (scoped_identifier) @import_path)
     """,
     "rust": """
-    (use_declaration (use_tree) @import_path)
+    (use_declaration) @import_path
     """,
     "c": """
     (preproc_include
@@ -141,7 +143,8 @@ class DepGraphExtractor:
         errors_path = self.logs_dir / "dep_graph" / "errors.jsonl"
         errors_path.parent.mkdir(parents=True, exist_ok=True)
 
-        module_map = _build_python_module_map(repo_index)
+        source_roots = _candidate_source_roots(repo_index)
+        module_map = _build_python_module_map(repo_index, source_roots)
         file_set = {entry.path for entry in repo_index.files}
 
         nodes: list[DepNode] = []
@@ -163,7 +166,7 @@ class DepGraphExtractor:
                 continue
             raw_edges = self._extract_edges(entry.path, lang, errors_path)
             for raw_edge in raw_edges:
-                dep_edge = _normalize_edge(raw_edge, module_map, file_set)
+                dep_edge = _normalize_edge(raw_edge, module_map, file_set, source_roots)
                 key = (
                     dep_edge.src,
                     dep_edge.ref_kind,
@@ -287,9 +290,16 @@ def _get_language(lang: str):
 
         return Language(javascript_language())
     if lang == "typescript":
-        from tree_sitter_typescript import language as typescript_language
+        try:
+            from tree_sitter_typescript import language as typescript_language
 
-        return Language(typescript_language())
+            return Language(typescript_language())
+        except Exception:
+            from tree_sitter_typescript import (
+                language_typescript as typescript_language,
+            )
+
+            return Language(typescript_language())
     if lang == "go":
         from tree_sitter_go import language as go_language
 
@@ -330,12 +340,25 @@ def _probe_tree_sitter() -> None:
 
 
 def _iter_captures(
-    captures: list[tuple[object, str]] | list[tuple[object, str, int]],
+    captures: object,
 ) -> list[tuple[object, str]]:
-    """Normalize QueryCursor capture tuples across tree-sitter versions."""
+    """Normalize QueryCursor capture results across tree-sitter versions.
+
+    Newer bindings may return dict[str, list[Node]] instead of list[tuple].
+    """
     normalized: list[tuple[object, str]] = []
-    for capture in captures:
-        if len(capture) < 2:
+    if isinstance(captures, dict):
+        for name, nodes in captures.items():
+            for node in nodes:
+                if hasattr(node, "start_byte"):
+                    normalized.append((node, name))
+        return normalized
+
+    for capture in captures:  # type: ignore[assignment]
+        try:
+            if len(capture) < 2:
+                continue
+        except TypeError:
             continue
         first = capture[0]
         second = capture[1]
@@ -354,7 +377,7 @@ def _iter_captures(
 def _extract_python_edges(
     rel_path: str,
     code: bytes,
-    captures: list[tuple[object, str]] | list[tuple[object, str, int]],
+    captures: object,
 ) -> list[RawEdge]:
     text = code.decode("utf-8", errors="ignore")
     raw_edges: list[RawEdge] = []
@@ -407,7 +430,7 @@ def _extract_js_edges(
     rel_path: str,
     lang: str,
     code: bytes,
-    captures: list[tuple[object, str]] | list[tuple[object, str, int]],
+    captures: object,
 ) -> list[RawEdge]:
     text = code.decode("utf-8", errors="ignore")
     raw_edges: list[RawEdge] = []
@@ -444,7 +467,7 @@ def _extract_generic_edges(
     rel_path: str,
     lang: str,
     code: bytes,
-    captures: list[tuple[object, str]] | list[tuple[object, str, int]],
+    captures: object,
 ) -> list[RawEdge]:
     text = code.decode("utf-8", errors="ignore")
     raw_edges: list[RawEdge] = []
@@ -549,6 +572,7 @@ def _normalize_edge(
     raw: RawEdge,
     module_map: dict[str, str],
     file_set: set[str],
+    source_roots: list[str],
 ) -> DepEdge:
     dst_raw = raw.dst_raw
     dst_norm = dst_raw
@@ -564,7 +588,12 @@ def _normalize_edge(
             module_name = dst_raw.lstrip(".")
             dst_norm = f"REL{level}:{module_name}" if module_name else f"REL{level}:"
             resolved = _resolve_python_relative(
-                raw.src, module_name, int(level), module_map
+                raw.src,
+                module_name,
+                int(level),
+                module_map,
+                file_set,
+                raw.symbol,
             )
             if resolved:
                 dst_kind = DepDstKind.INTERNAL_FILE
@@ -583,6 +612,9 @@ def _normalize_edge(
                     confidence = min(confidence, 0.7)
             else:
                 dst_kind = DepDstKind.EXTERNAL_PKG
+        dst_kind, dst_resolved_path, confidence = _maybe_infer_internal(
+            dst_raw, dst_norm, file_set, dst_kind, dst_resolved_path, confidence
+        )
         return DepEdge(
             src=raw.src,
             lang="python",
@@ -611,7 +643,16 @@ def _normalize_edge(
                 dst_kind = DepDstKind.RELATIVE
                 confidence = min(confidence, 0.5)
         else:
-            dst_kind = DepDstKind.EXTERNAL_PKG
+            resolved = _resolve_js_absolute(dst_raw, file_set, source_roots)
+            if resolved:
+                dst_kind = DepDstKind.INTERNAL_FILE
+                dst_resolved_path = resolved
+                confidence = min(confidence, 0.9)
+            else:
+                dst_kind = DepDstKind.EXTERNAL_PKG
+        dst_kind, dst_resolved_path, confidence = _maybe_infer_internal(
+            dst_raw, dst_norm, file_set, dst_kind, dst_resolved_path, confidence
+        )
         return DepEdge(
             src=raw.src,
             lang=raw.lang,
@@ -627,6 +668,20 @@ def _normalize_edge(
             extras=extras,
         )
 
+    resolved_generic = _resolve_generic_absolute(dst_raw, file_set, source_roots)
+    if resolved_generic:
+        dst_kind = DepDstKind.INTERNAL_FILE
+        dst_resolved_path = resolved_generic
+        confidence = min(confidence, 0.8)
+    else:
+        resolved_relative = _resolve_relative_path(raw.src, dst_raw, file_set)
+        if resolved_relative:
+            dst_kind = DepDstKind.INTERNAL_FILE
+            dst_resolved_path = resolved_relative
+            confidence = min(confidence, 0.8)
+    dst_kind, dst_resolved_path, confidence = _maybe_infer_internal(
+        dst_raw, dst_norm, file_set, dst_kind, dst_resolved_path, confidence
+    )
     return DepEdge(
         src=raw.src,
         lang=raw.lang,
@@ -656,7 +711,12 @@ def _resolve_python_absolute(
 
 
 def _resolve_python_relative(
-    src_path: str, module_name: str, level: int, module_map: dict[str, str]
+    src_path: str,
+    module_name: str,
+    level: int,
+    module_map: dict[str, str],
+    file_set: set[str],
+    symbol: str | None,
 ) -> str | None:
     src_module = src_path.replace("/", ".")
     if src_module.endswith(".py"):
@@ -672,13 +732,34 @@ def _resolve_python_relative(
         return module_map[candidate]
     if module_name:
         parent = ".".join(base[:-1])
-        return module_map.get(parent)
+        resolved = module_map.get(parent)
+        if resolved:
+            return resolved
+
+    base_dir = Path(src_path).parent
+    for _ in range(max(0, level - 1)):
+        base_dir = base_dir.parent
+    target = module_name or (symbol or "")
+    module_path = target.replace(".", "/") if target else ""
+    candidates = []
+    if module_path:
+        candidates.extend(
+            [
+                f"{base_dir.as_posix()}/{module_path}.py",
+                f"{base_dir.as_posix()}/{module_path}/__init__.py",
+            ]
+        )
+    else:
+        candidates.append(f"{base_dir.as_posix()}/__init__.py")
+    for candidate in candidates:
+        if candidate in file_set:
+            return candidate
     return None
 
 
 def _resolve_js_relative(src_path: str, dst_raw: str, file_set: set[str]) -> str | None:
     src_dir = Path(src_path).parent
-    base = (src_dir / dst_raw).as_posix()
+    base = _normalize_posix_path((src_dir / dst_raw).as_posix())
     candidates = [
         base,
         f"{base}.ts",
@@ -696,16 +777,165 @@ def _resolve_js_relative(src_path: str, dst_raw: str, file_set: set[str]) -> str
     return None
 
 
-def _build_python_module_map(repo_index: RepoIndex) -> dict[str, str]:
+def _resolve_js_absolute(
+    dst_raw: str, file_set: set[str], source_roots: list[str]
+) -> str | None:
+    if not source_roots:
+        return None
+    candidates: list[str] = []
+    for root in source_roots:
+        base = f"{root}/{dst_raw}"
+        candidates.extend(
+            [
+                base,
+                f"{base}.ts",
+                f"{base}.tsx",
+                f"{base}.js",
+                f"{base}.jsx",
+                f"{base}/index.ts",
+                f"{base}/index.tsx",
+                f"{base}/index.js",
+                f"{base}/index.jsx",
+            ]
+        )
+    for candidate in candidates:
+        if candidate in file_set:
+            return candidate
+    return None
+
+
+def _resolve_generic_absolute(
+    dst_raw: str, file_set: set[str], source_roots: list[str]
+) -> str | None:
+    if not source_roots:
+        return None
+    for root in source_roots:
+        candidate = f"{root}/{dst_raw}"
+        if candidate in file_set:
+            return candidate
+    return None
+
+
+def _normalize_posix_path(path: str) -> str:
+    parts = []
+    for part in PurePosixPath(path).parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _resolve_relative_path(
+    src_path: str, dst_raw: str, file_set: set[str]
+) -> str | None:
+    if not (dst_raw.startswith("./") or dst_raw.startswith("../")):
+        return None
+    base = PurePosixPath(src_path).parent / dst_raw
+    normalized = _normalize_posix_path(base.as_posix())
+    if normalized in file_set:
+        return normalized
+    return None
+
+
+def _infer_internal_from_nodes(
+    dst_raw: str, dst_norm: str, file_set: set[str]
+) -> str | None:
+    candidates: set[str] = set()
+    for value in (dst_norm, dst_raw):
+        if not value:
+            continue
+        cleaned = value.strip().strip("\"'")
+        candidates.add(cleaned)
+        if "/" in cleaned:
+            candidates.add(cleaned)
+        module_path = cleaned.replace(".", "/")
+        if module_path:
+            candidates.update(
+                {
+                    f"{module_path}.py",
+                    f"{module_path}/__init__.py",
+                    f"{module_path}.js",
+                    f"{module_path}.jsx",
+                    f"{module_path}.ts",
+                    f"{module_path}.tsx",
+                    f"{module_path}/index.js",
+                    f"{module_path}/index.jsx",
+                    f"{module_path}/index.ts",
+                    f"{module_path}/index.tsx",
+                    f"{module_path}.go",
+                    f"{module_path}.java",
+                    f"{module_path}.rs",
+                    f"{module_path}.c",
+                    f"{module_path}.h",
+                    f"{module_path}.cpp",
+                    f"{module_path}.hpp",
+                }
+            )
+    for candidate in candidates:
+        if candidate in file_set:
+            return candidate
+    return None
+
+
+def _maybe_infer_internal(
+    dst_raw: str,
+    dst_norm: str,
+    file_set: set[str],
+    dst_kind: DepDstKind,
+    dst_resolved_path: str | None,
+    confidence: float,
+) -> tuple[DepDstKind, str | None, float]:
+    if dst_resolved_path:
+        return dst_kind, dst_resolved_path, confidence
+    inferred = _infer_internal_from_nodes(dst_raw, dst_norm, file_set)
+    if inferred:
+        return DepDstKind.INTERNAL_FILE, inferred, min(confidence, 0.7)
+    return dst_kind, dst_resolved_path, confidence
+
+
+def _candidate_source_roots(repo_index: RepoIndex) -> list[str]:
+    top_dirs: set[str] = set()
+    py_dirs: set[str] = set()
+    for entry in repo_index.files:
+        parts = entry.path.split("/")
+        if len(parts) > 1:
+            top = parts[0]
+            top_dirs.add(top)
+            if entry.path.endswith(".py"):
+                py_dirs.add(top)
+    common = {"src", "app", "lib", "packages", "client", "server"}
+    roots = py_dirs | (common & top_dirs)
+    return sorted(roots)
+
+
+def _build_python_module_map(
+    repo_index: RepoIndex, source_roots: list[str]
+) -> dict[str, str]:
     module_map: dict[str, str] = {}
     for entry in repo_index.files:
         if entry.path.endswith(".py"):
             module = entry.path[:-3].replace("/", ".")
             module_map[module] = entry.path
+            for root in source_roots:
+                prefix = f"{root}/"
+                if entry.path.startswith(prefix):
+                    module_map[entry.path[len(prefix) : -3].replace("/", ".")] = (
+                        entry.path
+                    )
             if entry.path.endswith("/__init__.py"):
                 pkg = entry.path[:-12].replace("/", ".")
                 if pkg:
                     module_map[pkg] = entry.path
+                for root in source_roots:
+                    prefix = f"{root}/"
+                    if entry.path.startswith(prefix):
+                        pkg_src = entry.path[len(prefix) : -12].replace("/", ".")
+                        if pkg_src:
+                            module_map[pkg_src] = entry.path
     return module_map
 
 

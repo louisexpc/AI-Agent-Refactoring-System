@@ -147,20 +147,32 @@
   - ext: 檔案副檔名（可為 null）
   - bytes: 檔案大小
   - sha1: 檔案內容 sha1
-- DepGraphL0
+- DepGraph
   - nodes: DepNode[]
   - 檔案/模組節點
   - edges: DepEdge[]
-  - import/include 邊
-- DepNode: node_id, path, kind
+  - import/include/use/require 等邊
+  - version, generated_at
+  - 補充：若 `dst_resolved_path` 缺失，會用 `nodes`（repo 內檔案清單）做 best-effort 反查；成功時將 `dst_kind` 調整為 `internal_file`，並降低 `confidence`。
+- DepNode: node_id, path, kind, lang, ext
   - node_id: 節點識別碼（通常為路徑）
   - path: 檔案路徑
   - kind: 節點類型（預設 file）
-- DepEdge: src, dst, kind, confidence
+  - lang: 語言識別（可為 null）
+  - ext: 副檔名（可為 null）
+- DepEdge: src, lang, ref_kind, dst_raw, dst_norm, dst_kind, range, confidence
   - src: 來源檔案
-  - dst: 依賴的模組或路徑
-  - kind: 關係類型（import/include）
+  - lang: 語言識別（python/js/ts/go...）
+  - ref_kind: 引用類型（import/include/use/require/dynamic_import）
+  - dst_raw: 原始引用字串
+  - dst_norm: 正規化引用 key
+  - dst_kind: internal_file | external_pkg | stdlib | relative | unknown
+  - range: 來源位置範圍
   - confidence: 信心值（0~1）
+  - dst_resolved_path: internal resolve 結果（可為 null）
+  - symbol: from-import 的符號（可為 null）
+  - is_relative: 是否為相對引用
+  - extras: 語言特有資訊
 
 ### Data Assets / SQL Inventory
 - DbAssetsIndex
@@ -203,7 +215,7 @@
 2. Snapshot: clone/fetch、固定 commit SHA、輸出 repo_meta 與 snapshot archive
 3. Index & Scope: 產出 repo_index 與 scope_candidates
 4. Exec Matrix + Probe: 生成命令候選、best-effort 執行並寫 logs/coverage
-5. DepGraph L0: lexical import/include 依賴圖
+5. DepGraph: tree-sitter 依賴抽取 + best-effort 解析
 6. Data Assets + SQL Inventory: 索引 SQL/migration 並抽取 embedded SQL
 7. Evidence: GitHub issues/PR/checks best-effort 抓取
 
