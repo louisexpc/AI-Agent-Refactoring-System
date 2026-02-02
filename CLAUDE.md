@@ -20,72 +20,76 @@ Project3:經典購物車系統，由熱門語言撰寫
 - 輸出 : 每輪迭代需產出重構評估報告、下輪計畫
 - UI不限格式，可以是CLI、Web等等
 - 平台 : GCP
-## 迭代前 Pipeline
-### Repo Loader (Louis)
-- Target: Clone All files + PR 報告 -> Local Cache + Indexing Database(or method)
-- 對外 API : 接 `repo_url` + `prompt`(Optional)
-- AST (依賴性分析)
-### Analyze & Plan (Jesse, Karl)
-- Target: Agent 分析整體 repo + 重構計畫
-- 提供一個 Prompt Template 引導重構方向 + 人工調整 Prompt
-Recommendations:
-- 分析 Module Dependency 決定改訂計畫 + Test Cases 測試
-### Generate Test (Yoyo)
-- 策略：Golden Master / Snapshot Testing + Unit Test 雙層驗證
-- 對外 API：兩個入口，供迭代 pipeline 呼叫
-  - `run_overall_test()`: 建立 golden baseline / 執行 golden comparison
-  - `run_module_test()`: 針對單一 module 生成 + 執行 unit test
+## 整體 Pipeline 架構
+
+### 迭代前 Pipeline
+```
+Repo Info → Initial Prompt → Analyze & Plan（Template Prompt）→ 產出 Plan
+                                                                  ↓
+                                              run_overall_test() 建立 golden baseline
+                                                                  ↓
+                                                        人工介入審核
+                                                                  ↓
+                                                      Start Prompt → 開始迭代
+```
+
+### 迭代 Pipeline（每個 Stage）
+```
+Stage Plan
+  ↓
+Clone last stage repo → 修改 Code
+  ↓
+Unit Test（Apply Agent 自行生成，呼叫 run_module_test()）
+  ↓
+Evaluation Unit Test ──Failed──→ Generate Report → 重回這次 Stage
+  ↓ Success
+是否為最後 Stage?
+  ├─ 否 → run_overall_test(refactored_repo_dir=...)
+  │         ├─ Failed → Generate Report → 重回 Stage
+  │         └─ Success → Generate Report / Next Stage Plan / Commit
+  └─ 是 → run_overall_test(refactored_repo_dir=最終版本)
+            ├─ Failed → Generate Report
+            └─ Success → Generate Final Report
+```
+
+### 模組分工
+#### Repo Loader (Louis)
+- Target: Clone All files + PR 報告 → Local Cache + Indexing Database
+- 對外 API：接 `repo_url` + `prompt`(Optional)
+- AST（依賴性分析）→ 產出 DepGraph
+
+#### Analyze & Plan (Jesse, Karl)
+- Target: Agent 分析整體 repo + 產出重構計畫（大 Plan → Stage 1, 2, 3...）
+- 提供 Prompt Template 引導重構方向 + 人工調整 Prompt
+- 分析 Module Dependency 決定修改順序
+
+#### Generate Test (Yoyo)
+- 策略：Golden Master / Snapshot Testing
+- **迭代前職責**：`run_overall_test()` 建立整個 repo 的 golden baseline
+- **迭代中職責**：提供 API 供迭代 pipeline 呼叫
+  - `run_overall_test(refactored_repo_dir=...)`: golden comparison 驗證整體行為不變
+  - `run_module_test(file_path=...)`: 供 Apply Agent 驗證單一模組重構正確性
 - 所有 LLM 依賴的模組在 `llm_client=None` 時都有 stub fallback
 - 以 file 級別為單位（非 function 級別），LLM 讀整個檔案直接生成測試
 
-#### Pipeline 呼叫流程
+#### `run_overall_test()` 內部流程（迭代前 + 迭代中都用）
 ```
-階段一（迭代前）：
-  run_overall_test(refactored_repo_dir=None)
-  → File Filter → Guidance → Golden Capture → 建立 baseline
-
-階段二（每個 Stage）：
-  ① run_module_test(file_path="moduleA.py")
-     → 讀舊 code → LLM 生成 unit test → 跑舊 code baseline
-  ② Apply Agent 重構 moduleA
-  ③ run_module_test(file_path="moduleA.py", refactored_repo_dir=...)
-     → 同一組 test 跑新 code → 比對 baseline
-  ④ run_overall_test(refactored_repo_dir=...)
-     → golden comparison 確認整體行為不變
-  → 兩種都 pass → 進入下一個 Stage
-
-最終驗收：
-  run_overall_test(refactored_repo_dir=最終版本)
-  → 產出 Final Report
+Phase 1: File Filter — 從 DepGraph 過濾目標語言檔案 → list[SourceFile]
+Phase 2: Guidance — LLM 分析每個檔案產出測試指引（副作用、mock 建議等）
+Phase 3: Golden Capture — LLM 生成呼叫腳本 → subprocess 執行舊 code → 捕獲 golden output
+Golden Comparison（僅迭代時）— 同樣腳本跑重構後 code → normalize → diff 新舊輸出
+Report — 彙總 golden comparison results → OverallTestReport
 ```
 
-#### Phase 說明
-**Phase 1：File Filter**
-- 從 DepGraph 過濾目標語言檔案（.py/.go/.js/.ts）
-- 讀取檔案內容，產出 `list[SourceFile]`
-
-**Phase 2：LLM 生成測試指引（Guidance）**
-- LLM 讀整個檔案原始碼，產出結構化 JSON 指引
-- 內容：副作用識別、mock 建議、非確定性行為、外部依賴
-
-**Phase 3：Golden Capture（file 級別）**
-- LLM 生成每個檔案的呼叫腳本（呼叫所有 public function）
-- subprocess 執行舊 code，捕獲 stdout 作為 golden output
-
-**Phase 4：Test Code Emitter**
-- LLM 讀整個檔案 + guidance + golden output → 直接生成完整 test file
-- LLM 自行決定測哪些函式、用什麼 input、assert 什麼
-
-**Phase 5：Test Runner**
-- subprocess 跑 pytest 執行 emitted 測試檔案
-- 收集 pass/fail 數量 + pytest-cov coverage 百分比
-
-**Golden Comparison（迭代時才執行）**
-- 用同樣腳本跑重構後 code，normalize 後 diff 新舊輸出
-- OutputNormalizer 清洗時間戳、UUID 等非確定性欄位
-
-**Report Builder**
-- 彙總 golden comparison results → OverallTestReport
+#### `run_module_test()` 內部流程（迭代中由 Apply Agent 呼叫）
+```
+Phase 1: 讀取單一來源檔案 → SourceFile
+Phase 2: Guidance — LLM 分析該檔案
+Phase 3: Golden Capture — 執行舊 code 建立 baseline
+Phase 4: Test Emitter — LLM 讀整個檔案 + guidance + golden output → 生成 test file
+Phase 5: Test Runner — pytest 執行 → 收集 pass/fail + coverage
+（若有 refactored_repo_dir）— 同一組 test 跑新 code → 比對 baseline
+```
 
 #### 對外 API
 ```python
@@ -188,39 +192,12 @@ artifacts/<run_id>/test_gen/
 ```
 - `can_test=false` 時其餘欄位皆為 null
 - `refactored_result` 只在傳入 `refactored_repo_dir` 時才有值
-## 迭代 Pipeline(尚未實作)
-- Package : LanGraph
-Iterative Loop：Analyze → Plan → Apply → Validate → Report → Decide → 下一輪/停止
----
-### Analyze & Plan
-- Input: 上輪 report + Init Plan，
-- Output: 本輪 tasks（分優先序與風險）
-- Metrics
-    - 每輪計畫可執行率（plan→apply 成功比例）
-    - 任務粒度（每輪平均改動檔案數/LOC）
----
-### Apply(修改Code)
-- Tool: Git/OS/Coding Style Tool/DB API
-- Input: Task from `Analyze & Plan`
-- Output: Commit on Repo + Reports
----
-### Validate
-- Unit Test + General Test
-- Metrics:
-    - Line Coverage
-- Output: Test Report + Validation Score
-### Fallback(暫定要加)
-- 觸發: Test Case 通過率低於上一輪(暫定) or Line Coverage 降低
----
-### Report
-- 產出本輪報告 + 下輪 Start Prompt
-### Criteria & Limitation(暫定)
+### Criteria & Limitation（暫定）
 - Can Build/Compile
-- Coverage Ratio: 75%
-    - Early Stopping Mechnism
+- Coverage Ratio: 75%（Early Stopping Mechanism）
 - Time Limit: 15 min per iteration
-- Token Limit: 50 K per interation
-- Maximun Iteration : 3
+- Token Limit: 50K per iteration
+- Maximum Iteration: 3
 
 # Coding Style
 - `ruff format`: 維護統一 coding style
