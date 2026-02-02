@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Source File（Phase 1: File Filter 輸出）
@@ -69,6 +69,16 @@ class TestGuidance(BaseModel):
     mock_recommendations: list[str] = Field(default_factory=list)
     nondeterminism_notes: str | None = None
     external_deps: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "side_effects", "mock_recommendations", "external_deps", mode="before"
+    )
+    @classmethod
+    def _coerce_none_to_list(cls, v: Any) -> list[str]:
+        """LLM 可能回傳 null，統一轉為空 list。"""
+        if v is None:
+            return []
+        return v
 
 
 class TestGuidanceIndex(BaseModel):

@@ -17,7 +17,7 @@ repo_root = Path(__file__).resolve().parents[1]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from runner.test_gen import run_module_test, run_overall_test  # noqa: E402
+from runner.test_gen import run_overall_test  # noqa: E402
 from runner.test_gen.llm_adapter import create_vertex_client  # noqa: E402
 from shared.ingestion_types import DepGraph, RepoIndex  # noqa: E402
 
@@ -67,39 +67,6 @@ def main() -> None:
         output_str = str(r.output)[:80] if r.output else "(none)"
         print(f"  {r.file_path}: {status} -> {output_str}")
     print(f"Pass rate: {overall.pass_rate}")
-
-    # --- API 2: run_module_test ---
-    test_file = "Python/TirePressureMonitoringSystem/sensor.py"
-    print()
-    print("=" * 60)
-    print(f"API 2: run_module_test({test_file})")
-    print("=" * 60)
-
-    mr = run_module_test(
-        run_id=RUN_ID,
-        repo_dir=repo_dir,
-        file_path=test_file,
-        llm_client=llm_client,
-        artifacts_root=repo_root / "artifacts",
-        target_language="python",
-    )
-
-    print(f"  can_test: {mr.can_test}")
-    if mr.emitted_file:
-        print(f"  test_file: {mr.emitted_file.path}")
-        lines = mr.emitted_file.content.split("\n")[:15]
-        for line in lines:
-            print(f"    {line}")
-        total_lines = len(mr.emitted_file.content.split("\n"))
-        if total_lines > 15:
-            print(f"    ... ({total_lines} lines total)")
-    if mr.baseline_result:
-        br = mr.baseline_result
-        print(
-            f"  baseline: total={br.total} passed={br.passed} "
-            f"failed={br.failed} coverage={br.coverage_pct}"
-        )
-    print(f"  coverage: {mr.coverage_pct}")
 
     print()
     print(f"Artifacts at: {repo_root / 'artifacts' / RUN_ID / 'test_gen'}")

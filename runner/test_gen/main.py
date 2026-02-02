@@ -42,7 +42,7 @@ def run_overall_test(
         repo_dir: 舊程式碼（snapshot）的 repo 目錄。
         dep_graph: 依賴圖。
         repo_index: 檔案索引。
-        llm_client: LLM 呼叫介面，None 表示使用 stub。
+        llm_client: LLM 呼叫介面。
         artifacts_root: artifacts 根目錄。
         target_language: 目標語言。
         refactored_repo_dir: 重構後程式碼目錄（None 則只建 baseline）。
@@ -73,6 +73,7 @@ def run_overall_test(
         repo_dir=repo_dir,
         logs_dir=logs_dir / "golden",
         llm_client=llm_client,
+        dep_graph=dep_graph,
         guidance_index=guidance_index,
     )
     golden_snapshot = capture.run(source_files)
@@ -119,7 +120,7 @@ def run_module_test(
         run_id: 所屬 run 的識別碼。
         repo_dir: 舊程式碼（snapshot）的 repo 目錄。
         file_path: 要測的檔案路徑（相對於 repo root）。
-        llm_client: LLM 呼叫介面，None 表示使用 stub。
+        llm_client: LLM 呼叫介面。
         artifacts_root: artifacts 根目錄。
         target_language: 目標語言。
         refactored_repo_dir: 重構後程式碼目錄。

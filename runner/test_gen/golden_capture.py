@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from shared.ingestion_types import DepGraph
 from shared.test_types import (
     GoldenRecord,
     GoldenSnapshot,
@@ -40,6 +41,9 @@ Testing guidance:
 - Mock recommendations: {mock_recommendations}
 - Nondeterminism notes: {nondeterminism_notes}
 
+Dependencies (from dep_graph):
+{dependency_info}
+
 Requirements:
 - IMPORTANT: The file's parent directory is NOT a Python package (no __init__.py).
   You MUST add the file's directory to sys.path before importing. Example:
@@ -51,6 +55,13 @@ Requirements:
 - The script must be self-contained and runnable with `python script.py`
 - Use `from unittest.mock import patch` if mocking is needed
 - For class methods, instantiate the class first
+- Use DESCRIPTIVE keys in the results dict so we know what was tested.
+  Format: "ClassName_methodName_scenario" or "functionName_scenario".
+  Examples:
+    "Sensor_read_normalRange": sensor.read() with value in normal range
+    "add_positiveNumbers": add(2, 3) returns 5
+    "parse_emptyInput": parse("") handles empty string
+  Do NOT use generic keys like "result1", "test1", "output".
 - Collect all results into a dict and print as JSON on the LAST line
 - The LAST line must be: print(json.dumps(results, default=str))
 - Do NOT include markdown code fences, return raw Python code only
@@ -67,14 +78,16 @@ class GoldenCaptureRunner:
     Args:
         repo_dir: 舊程式碼（snapshot）的 repo 目錄。
         logs_dir: 執行日誌輸出目錄。
-        llm_client: LLM 呼叫介面，None 表示使用 fallback。
+        llm_client: LLM 呼叫介面。
+        dep_graph: 依賴圖，提供 edges 資訊。
         guidance_index: 測試指引索引，提供 mock 建議。
         timeout_sec: 單筆測試的超時秒數。
     """
 
     repo_dir: Path
     logs_dir: Path
-    llm_client: Any = None
+    llm_client: Any
+    dep_graph: DepGraph | None = None
     guidance_index: TestGuidanceIndex | None = None
     timeout_sec: int = 30
 
@@ -151,7 +164,7 @@ class GoldenCaptureRunner:
             )
 
     def _generate_script(self, source_file: SourceFile) -> str:
-        """生成可執行的 Python 腳本。
+        """用 LLM 生成可執行的 Python 腳本。
 
         Args:
             source_file: 來源檔案。
@@ -159,9 +172,7 @@ class GoldenCaptureRunner:
         Returns:
             Python 腳本字串。
         """
-        if self.llm_client is not None:
-            return self._generate_with_llm(source_file)
-        return self._generate_fallback(source_file)
+        return self._generate_with_llm(source_file)
 
     def _generate_with_llm(self, source_file: SourceFile) -> str:
         """用 LLM 生成呼叫腳本。
@@ -177,6 +188,8 @@ class GoldenCaptureRunner:
         module_dir = str(Path(source_file.path).parent)
         module_name = Path(source_file.path).stem
 
+        dep_info = self._get_dependency_info(source_file.path)
+
         prompt = CAPTURE_SCRIPT_PROMPT.format(
             module_path=source_file.path,
             module_dir=module_dir,
@@ -189,6 +202,7 @@ class GoldenCaptureRunner:
             nondeterminism_notes=(
                 guidance.nondeterminism_notes if guidance else "none"
             ),
+            dependency_info=dep_info,
         )
 
         response = self.llm_client.generate(prompt)
@@ -202,37 +216,6 @@ class GoldenCaptureRunner:
         if script.endswith("```"):
             script = script[:-3].strip()
         return script
-
-    def _generate_fallback(self, source_file: SourceFile) -> str:
-        """無 LLM 時的 fallback 腳本。
-
-        Args:
-            source_file: 來源檔案。
-
-        Returns:
-            簡單的 Python 腳本。
-        """
-        module_dir = str(Path(source_file.path).parent)
-        module_name = Path(source_file.path).stem
-        return (
-            "import json\n"
-            "import sys\n"
-            f"sys.path.insert(0, '{module_dir}')\n"
-            "\n"
-            f"import {module_name} as mod\n"
-            "\n"
-            "results = {}\n"
-            "for name in dir(mod):\n"
-            "    if name.startswith('_'):\n"
-            "        continue\n"
-            "    obj = getattr(mod, name)\n"
-            "    if callable(obj):\n"
-            "        try:\n"
-            "            results[name] = str(obj)\n"
-            "        except Exception as e:\n"
-            "            results[name] = f'ERROR: {e}'\n"
-            "print(json.dumps(results, default=str))\n"
-        )
 
     def _get_guidance(self, module_path: str) -> TestGuidance | None:
         """查找模組的測試指引。
@@ -249,6 +232,50 @@ class GoldenCaptureRunner:
             if g.module_path == module_path:
                 return g
         return None
+
+    def _get_dependency_info(self, module_path: str) -> str:
+        """從 dep_graph edges 取得該檔案的依賴資訊。
+
+        Args:
+            module_path: 模組檔案路徑。
+
+        Returns:
+            依賴描述文字，供 prompt 使用。
+        """
+        if self.dep_graph is None or not self.dep_graph.edges:
+            return "No dependency information available."
+
+        module_dir = str(Path(module_path).parent)
+        imports: list[str] = []
+        for edge in self.dep_graph.edges:
+            if edge.src != module_path:
+                continue
+            # 跳過標準庫
+            dst = edge.dst_raw
+            if dst in (
+                "collections",
+                "json",
+                "os",
+                "sys",
+                "re",
+                "random",
+                "unittest",
+                "html",
+                "time",
+                "pathlib",
+                "typing",
+                "abc",
+                "math",
+                "datetime",
+                "functools",
+                "itertools",
+            ):
+                continue
+            imports.append(f"- imports '{dst}' (likely in directory: {module_dir})")
+
+        if not imports:
+            return "This file has no internal dependencies."
+        return "\n".join(imports)
 
     def _try_parse_json(self, text: str) -> str | dict | list | None:
         """嘗試將 stdout 解析為 JSON。

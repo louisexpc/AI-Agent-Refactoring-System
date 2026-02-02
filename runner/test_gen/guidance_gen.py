@@ -6,29 +6,15 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any
 
 from shared.test_types import SourceFile, TestGuidance, TestGuidanceIndex
 
-
-class LLMClient(Protocol):
-    """LLM 呼叫介面。
-
-    實作此 Protocol 即可替換不同的 LLM provider。
-    """
-
-    def generate(self, prompt: str) -> str:
-        """送出 prompt 並取得回應文字。
-
-        Args:
-            prompt: 完整 prompt 文字。
-
-        Returns:
-            LLM 回應文字。
-        """
-        ...
-
+logger = logging.getLogger(__name__)
 
 GUIDANCE_PROMPT_TEMPLATE: str = """\
 You are a senior test engineer. Analyze the following source code
@@ -51,18 +37,36 @@ Return the following JSON format (do NOT include markdown code fences):
 """
 
 
+def _strip_markdown_fences(text: str) -> str:
+    """移除 LLM 回應中的 markdown code fence。
+
+    Args:
+        text: LLM 回應文字。
+
+    Returns:
+        清理後的文字。
+    """
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[len("```json") :].strip()
+    elif text.startswith("```"):
+        text = text[3:].strip()
+    if text.endswith("```"):
+        text = text[:-3].strip()
+    return text
+
+
 @dataclass
 class TestGuidanceGenerator:
     """LLM 驅動的測試指引生成器。
 
-    當 ``llm_client`` 為 None 時，回傳空指引（供無 LLM 環境測試）。
-
     Args:
-        llm_client: LLM 呼叫介面，None 表示使用 stub。
+        llm_client: LLM 呼叫介面。
+        repo_dir: repo 根目錄。
     """
 
-    llm_client: Any = None
-    repo_dir: Any = None
+    llm_client: Any
+    repo_dir: Path
 
     def build_for_files(
         self,
@@ -79,10 +83,6 @@ class TestGuidanceGenerator:
         guidances: list[TestGuidance] = []
 
         for sf in source_files:
-            if self.llm_client is None:
-                guidances.append(TestGuidance(module_path=sf.path))
-                continue
-
             prompt = GUIDANCE_PROMPT_TEMPLATE.format(
                 module_path=sf.path,
                 source_code=sf.read_content(self.repo_dir),
@@ -102,9 +102,6 @@ class TestGuidanceGenerator:
         Returns:
             測試指引。
         """
-        if self.llm_client is None:
-            return TestGuidance(module_path=source_file.path)
-
         prompt = GUIDANCE_PROMPT_TEMPLATE.format(
             module_path=source_file.path,
             source_code=source_file.read_content(self.repo_dir),
@@ -115,6 +112,7 @@ class TestGuidanceGenerator:
     def _parse_response(self, module_path: str, response: str) -> TestGuidance:
         """解析 LLM 回應為 TestGuidance。
 
+        先清除 markdown code fence，再嘗試 JSON 解析。
         解析失敗時回傳空指引而非拋錯，確保 pipeline 不中斷。
 
         Args:
@@ -124,10 +122,10 @@ class TestGuidanceGenerator:
         Returns:
             解析後的 TestGuidance。
         """
-        import json
-
+        cleaned = _strip_markdown_fences(response)
         try:
-            data = json.loads(response)
+            data = json.loads(cleaned)
             return TestGuidance.model_validate(data)
-        except (json.JSONDecodeError, Exception):
+        except (json.JSONDecodeError, Exception) as exc:
+            logger.warning("Failed to parse guidance for %s: %s", module_path, exc)
             return TestGuidance(module_path=module_path)

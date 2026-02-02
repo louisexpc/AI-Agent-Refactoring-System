@@ -54,11 +54,11 @@ class TestCodeEmitter:
     """將來源檔案轉為可執行測試原始碼（file 級別）。
 
     LLM 讀整個檔案後自行決定測哪些函式、用什麼 input。
-    無 LLM 時使用模板生成基礎測試框架。
 
     Args:
         target_language: 目標語言（python、go、typescript）。
-        llm_client: LLM 呼叫介面，None 表示使用模板生成。
+        llm_client: LLM 呼叫介面。
+        repo_dir: repo 根目錄。
     """
 
     target_language: str = "python"
@@ -81,9 +81,7 @@ class TestCodeEmitter:
         Returns:
             產出的測試檔案。
         """
-        if self.llm_client is not None:
-            return self._emit_with_llm(source_file, guidance, golden_record)
-        return self._emit_with_template(source_file)
+        return self._emit_with_llm(source_file, guidance, golden_record)
 
     def emit_for_files(
         self,
@@ -157,34 +155,6 @@ class TestCodeEmitter:
             content = content[:-3].strip()
 
         test_path = self._derive_test_path(source_file.path)
-        return EmittedTestFile(
-            path=test_path,
-            language=self.target_language,
-            content=content,
-            source_file=source_file.path,
-        )
-
-    def _emit_with_template(self, source_file: SourceFile) -> EmittedTestFile:
-        """用模板生成基礎測試框架（stub 模式）。
-
-        Args:
-            source_file: 來源檔案。
-
-        Returns:
-            EmittedTestFile。
-        """
-        test_path = self._derive_test_path(source_file.path)
-        content = (
-            '"""Auto-generated test stub for {path}."""\n'
-            "\n"
-            "import pytest\n"
-            "\n"
-            "\n"
-            "def test_placeholder():\n"
-            '    """Placeholder test — replace with real assertions."""\n'
-            "    assert True\n"
-        ).format(path=source_file.path)
-
         return EmittedTestFile(
             path=test_path,
             language=self.target_language,

@@ -69,14 +69,14 @@ Evaluation Unit Test ──Failed──→ Generate Report → 重回這次 Stag
 - **迭代中職責**：提供 API 供迭代 pipeline 呼叫
   - `run_overall_test(refactored_repo_dir=...)`: golden comparison 驗證整體行為不變
   - `run_module_test(file_path=...)`: 供 Apply Agent 驗證單一模組重構正確性
-- 所有 LLM 依賴的模組在 `llm_client=None` 時都有 stub fallback
+- 所有 LLM 依賴的模組都需要 `llm_client`（無 stub fallback）
 - 以 file 級別為單位（非 function 級別），LLM 讀整個檔案直接生成測試
 
 #### `run_overall_test()` 內部流程（迭代前 + 迭代中都用）
 ```
 Phase 1: File Filter — 從 DepGraph 過濾目標語言檔案 → list[SourceFile]
 Phase 2: Guidance — LLM 分析每個檔案產出測試指引（副作用、mock 建議等）
-Phase 3: Golden Capture — LLM 生成呼叫腳本 → subprocess 執行舊 code → 捕獲 golden output
+Phase 3: Golden Capture — LLM 生成呼叫腳本（含 dep_graph edges 依賴資訊）→ subprocess 執行舊 code → 捕獲 golden output
 Golden Comparison（僅迭代時）— 同樣腳本跑重構後 code → normalize → diff 新舊輸出
 Report — 彙總 golden comparison results → OverallTestReport
 ```
@@ -146,7 +146,7 @@ artifacts/<run_id>/test_gen/
 ```
 - 檔案內容透過 `SourceFile.read_content(repo_dir)` 按需從磁碟讀取
 
-**guidance.json** — LLM 分析每個檔案產出的測試指引（stub mode 時為空值）
+**guidance.json** — LLM 分析每個檔案產出的測試指引
 ```json
 { "guidances": [
     { "module_path": "Python/Leaderboard/leaderboard.py",
@@ -169,6 +169,7 @@ artifacts/<run_id>/test_gen/
 ```
 - `exit_code=0` 正常，`1` 表示腳本執行失敗，`-1` 表示 timeout 或例外
 - `output` 為 JSON 物件（成功時）或 null（失敗時）
+- output 的 key 採描述性命名（`ClassName_methodName_scenario`），方便辨識測試內容
 
 **overall_report.json** — `run_overall_test()` 的最終報告
 ```json

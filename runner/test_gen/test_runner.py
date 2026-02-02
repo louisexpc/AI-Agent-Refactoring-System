@@ -80,6 +80,9 @@ class TestRunner:
             "-v",
             "--tb=short",
             "--no-header",
+            f"--rootdir={self.repo_dir}",
+            "-o",
+            "addopts=",
         ]
         if self.collect_coverage:
             # 用 pytest-cov 收集 coverage，對 repo_dir 量測
@@ -92,6 +95,14 @@ class TestRunner:
 
         log_name = Path(emitted.path).stem
 
+        # 設定 PYTHONPATH 讓測試檔能 import 來源模組
+        import os
+
+        env = os.environ.copy()
+        source_dir = str(self.repo_dir / Path(emitted.source_file).parent)
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{source_dir}:{existing}" if existing else source_dir
+
         try:
             result = subprocess.run(
                 cmd,
@@ -99,6 +110,7 @@ class TestRunner:
                 text=True,
                 timeout=self.timeout_sec,
                 cwd=str(self.repo_dir),
+                env=env,
             )
 
             # 寫入日誌
