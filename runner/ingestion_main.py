@@ -196,7 +196,7 @@ def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> s
     dep_graph_light_path.write_text(
         dep_graph.model_dump_json(
             indent=2,
-            exclude={"edges": {"__all__": {"range", "symbol", "extras"}}},
+            exclude={"edges": {"__all__": {"range", "symbol", "extras", "dst_kind"}}},
         ),
         encoding="utf-8",
     )
