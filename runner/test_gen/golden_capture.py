@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from runner.test_gen.dep_resolver import resolve_dependency_context
 from shared.ingestion_types import DepGraph
 from shared.test_types import (
     GoldenRecord,
@@ -41,8 +42,9 @@ Testing guidance:
 - Mock recommendations: {mock_recommendations}
 - Nondeterminism notes: {nondeterminism_notes}
 
-Dependencies (from dep_graph):
+Dependent source files (signatures of imported modules):
 {dependency_info}
+Use this context to understand the types, classes and functions available.
 
 Requirements:
 - IMPORTANT: The file's parent directory is NOT a Python package (no __init__.py).
@@ -126,14 +128,22 @@ class GoldenCaptureRunner:
 
         start = time.monotonic()
         try:
+            cov_data = self.logs_dir / f"{safe_name}.coverage"
             result = subprocess.run(
-                ["python", str(script_path)],
+                [
+                    "coverage",
+                    "run",
+                    f"--data-file={cov_data}",
+                    str(script_path),
+                ],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_sec,
                 cwd=str(self.repo_dir),
             )
             duration_ms = int((time.monotonic() - start) * 1000)
+
+            coverage_pct = self._read_coverage(cov_data)
 
             log_path = self.logs_dir / f"{safe_name}.log"
             log_path.write_text(
@@ -148,6 +158,7 @@ class GoldenCaptureRunner:
                 exit_code=result.returncode,
                 stderr_snippet=result.stderr[:500] if result.stderr else None,
                 duration_ms=duration_ms,
+                coverage_pct=coverage_pct,
             )
         except subprocess.TimeoutExpired:
             return GoldenRecord(
@@ -188,7 +199,9 @@ class GoldenCaptureRunner:
         module_dir = str(Path(source_file.path).parent)
         module_name = Path(source_file.path).stem
 
-        dep_info = self._get_dependency_info(source_file.path)
+        dep_info = resolve_dependency_context(
+            self.dep_graph, source_file.path, self.repo_dir
+        )
 
         prompt = CAPTURE_SCRIPT_PROMPT.format(
             module_path=source_file.path,
@@ -233,49 +246,34 @@ class GoldenCaptureRunner:
                 return g
         return None
 
-    def _get_dependency_info(self, module_path: str) -> str:
-        """從 dep_graph edges 取得該檔案的依賴資訊。
+    def _read_coverage(self, cov_data: Path) -> float | None:
+        """從 coverage data file 讀取覆蓋率百分比。
 
         Args:
-            module_path: 模組檔案路徑。
+            cov_data: coverage 資料檔路徑。
 
         Returns:
-            依賴描述文字，供 prompt 使用。
+            覆蓋率百分比，或 None（讀取失敗時）。
         """
-        if self.dep_graph is None or not self.dep_graph.edges:
-            return "No dependency information available."
-
-        module_dir = str(Path(module_path).parent)
-        imports: list[str] = []
-        for edge in self.dep_graph.edges:
-            if edge.src != module_path:
-                continue
-            # 跳過標準庫
-            dst = edge.dst_raw
-            if dst in (
-                "collections",
-                "json",
-                "os",
-                "sys",
-                "re",
-                "random",
-                "unittest",
-                "html",
-                "time",
-                "pathlib",
-                "typing",
-                "abc",
-                "math",
-                "datetime",
-                "functools",
-                "itertools",
-            ):
-                continue
-            imports.append(f"- imports '{dst}' (likely in directory: {module_dir})")
-
-        if not imports:
-            return "This file has no internal dependencies."
-        return "\n".join(imports)
+        if not cov_data.exists():
+            return None
+        try:
+            result = subprocess.run(
+                ["coverage", "report", f"--data-file={cov_data}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            # 最後一行格式：TOTAL    100    20    80%
+            for line in reversed(result.stdout.splitlines()):
+                if "TOTAL" in line:
+                    parts = line.split()
+                    for part in reversed(parts):
+                        if part.endswith("%"):
+                            return float(part[:-1])
+            return None
+        except Exception:
+            return None
 
     def _try_parse_json(self, text: str) -> str | dict | list | None:
         """嘗試將 stdout 解析為 JSON。

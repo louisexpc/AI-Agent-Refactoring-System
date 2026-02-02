@@ -65,27 +65,26 @@ Evaluation Unit Test ──Failed──→ Generate Report → 重回這次 Stag
 
 #### Generate Test (Yoyo)
 - 策略：Golden Master / Snapshot Testing
-- **迭代前職責**：`run_overall_test()` 建立整個 repo 的 golden baseline
-- **迭代中職責**：提供 API 供迭代 pipeline 呼叫
-  - `run_overall_test(refactored_repo_dir=...)`: golden comparison 驗證整體行為不變
-  - `run_module_test(file_path=...)`: 供 Apply Agent 驗證單一模組重構正確性
-- 所有 LLM 依賴的模組都需要 `llm_client`（無 stub fallback）
-- 以 file 級別為單位（非 function 級別），LLM 讀整個檔案直接生成測試
+- **迭代前**：`run_overall_test()` 建立整個 repo 的 golden baseline
+- 以 file 級別為單位（沒function級別資料），LLM 讀整個檔案直接生成測試
 
 #### `run_overall_test()` 內部流程（迭代前 + 迭代中都用）
 ```
 Phase 1: File Filter — 從 DepGraph 過濾目標語言檔案 → list[SourceFile]
-Phase 2: Guidance — LLM 分析每個檔案產出測試指引（副作用、mock 建議等）
-Phase 3: Golden Capture — LLM 生成呼叫腳本（含 dep_graph edges 依賴資訊）→ subprocess 執行舊 code → 捕獲 golden output
+Phase 2: Guidance — LLM 逐檔分析（含依賴檔案 signatures context），每個檔案獨立產生一份測試指引（副作用、mock 建議等）
+Phase 3: Golden Capture — 逐檔生成呼叫腳本（含依賴檔案 signatures context）→ coverage run 執行舊 code → 捕獲 golden output + coverage%
+  - 按 source_files list 順序處理，每個腳本獨立執行（透過 sys.path.insert 解決同目錄依賴）
+  - 沒有可執行行為的檔案（純 data class / constants）會嘗試 instantiate，失敗則記錄 exit_code!=0
 Golden Comparison（僅迭代時）— 同樣腳本跑重構後 code → normalize → diff 新舊輸出
+  - normalize = 清洗非確定性欄位（時間戳→<TIMESTAMP>、UUID→<UUID>、記憶體位址→<ADDR>），避免誤判 FAIL
 Report — 彙總 golden comparison results → OverallTestReport
 ```
 
-#### `run_module_test()` 內部流程（迭代中由 Apply Agent 呼叫）
+#### `run_module_test()` 內部流程(可能需要plan資訊，先不處理)
 ```
 Phase 1: 讀取單一來源檔案 → SourceFile
-Phase 2: Guidance — LLM 分析該檔案
-Phase 3: Golden Capture — 執行舊 code 建立 baseline
+Phase 2: Guidance — LLM 分析該檔案（含依賴檔案 signatures）
+Phase 3: Golden Capture — coverage run 執行舊 code 建立 baseline + coverage%
 Phase 4: Test Emitter — LLM 讀整個檔案 + guidance + golden output → 生成 test file
 Phase 5: Test Runner — pytest 執行 → 收集 pass/fail + coverage
 （若有 refactored_repo_dir）— 同一組 test 跑新 code → 比對 baseline
@@ -133,6 +132,12 @@ artifacts/<run_id>/test_gen/
 └── emitted/                # Phase 4: 可執行測試檔
     ├── test_sensor.py
     └── ...
+
+artifacts/<run_id>/logs/test_gen/
+├── golden/                    # Golden capture 的中間產物（debug 用）
+│   ├── *_script.py            # LLM 生成的呼叫腳本
+│   └── *.log                  # 腳本執行的 stdout/stderr
+└── unit_test/                 # Module test 的 pytest 執行 log
 ```
 
 #### Artifact JSON 格式說明
@@ -156,6 +161,7 @@ artifacts/<run_id>/test_gen/
       "external_deps": [] }
 ]}
 ```
+- `nondeterminism_notes`: LLM 標註的非確定性行為（如 random、datetime.now()、環境變數），帶入 Phase 3 prompt 讓 LLM 知道要 mock 掉這些來源
 
 **golden_snapshot.json** — 執行舊 code 的 golden baseline 輸出
 ```json
@@ -180,8 +186,8 @@ artifacts/<run_id>/test_gen/
 ```
 - `comparison_results` 迭代前為空，迭代時包含每個檔案的 PASS/FAIL/ERROR/SKIPPED
 - `pass_rate` 迭代前為 0.0（無比較對象）
-
-**module_report_*.json** — `run_module_test()` 的單模組報告
+- TODO: 考慮加入 golden capture 的 coverage（用 `coverage run` 執行腳本），作為測試充分性的參考指標
+**module_report_*.json** — `run_module_test()` 的單模組報告(先不管)
 ```json
 { "run_id": "f3f7...",
   "file_path": "Python/.../sensor.py",
@@ -220,4 +226,3 @@ artifacts/<run_id>/test_gen/
 **動態節點**：正在重構的檔案節點會閃爍或高亮顯示。
 **顏色編碼**：灰色 (Pending) -> 黃色 (Processing) -> 紅色 (Error) -> 綠色 (Done)。
 **目的**：讓評審直觀理解運作過程。
-- Lrgacy code如果根本跑不起來?要怎麼驗證?

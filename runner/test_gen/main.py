@@ -64,7 +64,9 @@ def run_overall_test(
     )
 
     # Phase 2: LLM 生成測試指引
-    guidance_gen = TestGuidanceGenerator(llm_client=llm_client, repo_dir=repo_dir)
+    guidance_gen = TestGuidanceGenerator(
+        llm_client=llm_client, repo_dir=repo_dir, dep_graph=dep_graph
+    )
     guidance_index = guidance_gen.build_for_files(source_files)
     _write_json(test_gen_dir / "guidance.json", guidance_index)
 

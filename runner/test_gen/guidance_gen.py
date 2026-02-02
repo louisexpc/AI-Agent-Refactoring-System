@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from runner.test_gen.dep_resolver import resolve_dependency_context
+from shared.ingestion_types import DepGraph
 from shared.test_types import SourceFile, TestGuidance, TestGuidanceIndex
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,9 @@ File path: {module_path}
 ```
 {source_code}
 ```
+
+Dependent source files (signatures):
+{dependency_info}
 
 Return the following JSON format (do NOT include markdown code fences):
 {{
@@ -67,6 +72,7 @@ class TestGuidanceGenerator:
 
     llm_client: Any
     repo_dir: Path
+    dep_graph: DepGraph | None = None
 
     def build_for_files(
         self,
@@ -83,9 +89,13 @@ class TestGuidanceGenerator:
         guidances: list[TestGuidance] = []
 
         for sf in source_files:
+            dep_info = resolve_dependency_context(
+                self.dep_graph, sf.path, self.repo_dir
+            )
             prompt = GUIDANCE_PROMPT_TEMPLATE.format(
                 module_path=sf.path,
                 source_code=sf.read_content(self.repo_dir),
+                dependency_info=dep_info,
             )
             response = self.llm_client.generate(prompt)
             guidance = self._parse_response(sf.path, response)
@@ -102,9 +112,13 @@ class TestGuidanceGenerator:
         Returns:
             測試指引。
         """
+        dep_info = resolve_dependency_context(
+            self.dep_graph, source_file.path, self.repo_dir
+        )
         prompt = GUIDANCE_PROMPT_TEMPLATE.format(
             module_path=source_file.path,
             source_code=source_file.read_content(self.repo_dir),
+            dependency_info=dep_info,
         )
         response = self.llm_client.generate(prompt)
         return self._parse_response(source_file.path, response)

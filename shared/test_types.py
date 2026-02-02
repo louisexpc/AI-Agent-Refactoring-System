@@ -75,9 +75,14 @@ class TestGuidance(BaseModel):
     )
     @classmethod
     def _coerce_none_to_list(cls, v: Any) -> list[str]:
-        """LLM 可能回傳 null，統一轉為空 list。"""
+        """LLM 可能回傳 null 或字串，統一轉為 list。"""
         if v is None:
             return []
+        if isinstance(v, str):
+            # LLM 回傳 "null" 字串或一段描述文字
+            if v.strip().lower() == "null":
+                return []
+            return [v]
         return v
 
 
@@ -108,6 +113,7 @@ class GoldenRecord(BaseModel):
     exit_code: int | None = None
     stderr_snippet: str | None = None
     duration_ms: int | None = None
+    coverage_pct: float | None = None
 
 
 class GoldenSnapshot(BaseModel):
