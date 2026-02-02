@@ -47,6 +47,8 @@ LANG_BY_EXT = {
     ".jsx": "javascript",
     ".ts": "typescript",
     ".tsx": "typescript",
+    ".cs": "csharp",
+    ".php": "php",
     ".go": "go",
     ".java": "java",
     ".rs": "rust",
@@ -107,6 +109,11 @@ QUERY_BY_LANG = {
 
 IMPORT_RE = re.compile(r"^\s*import\s+(.+)$")
 FROM_IMPORT_RE = re.compile(r"^\s*from\s+([\.\w]+)\s+import\s+(.+)$")
+CSHARP_USING_RE = re.compile(r"^\s*using\s+(?:static\s+)?([^;]+);\s*$")
+PHP_USE_RE = re.compile(r"^\s*use\s+([^;]+);\s*$")
+PHP_INCLUDE_RE = re.compile(
+    r"^\s*(include|include_once|require|require_once)\s*\(?\s*['\"]([^'\"]+)['\"]"
+)
 
 
 @dataclass
@@ -145,6 +152,7 @@ class DepGraphExtractor:
 
         source_roots = _candidate_source_roots(repo_index)
         module_map = _build_python_module_map(repo_index, source_roots)
+        csharp_map = _build_csharp_module_map(repo_index, source_roots)
         file_set = {entry.path for entry in repo_index.files}
 
         nodes: list[DepNode] = []
@@ -166,7 +174,9 @@ class DepGraphExtractor:
                 continue
             raw_edges = self._extract_edges(entry.path, lang, errors_path)
             for raw_edge in raw_edges:
-                dep_edge = _normalize_edge(raw_edge, module_map, file_set, source_roots)
+                dep_edge = _normalize_edge(
+                    raw_edge, module_map, csharp_map, file_set, source_roots
+                )
                 key = (
                     dep_edge.src,
                     dep_edge.ref_kind,
@@ -300,6 +310,19 @@ def _get_language(lang: str):
             )
 
             return Language(typescript_language())
+    if lang == "csharp":
+        from tree_sitter_c_sharp import language as csharp_language
+
+        return Language(csharp_language())
+    if lang == "php":
+        try:
+            from tree_sitter_php import language as php_language
+
+            return Language(php_language())
+        except Exception:
+            from tree_sitter_php import language_php as php_language
+
+            return Language(php_language())
     if lang == "go":
         from tree_sitter_go import language as go_language
 
@@ -543,6 +566,76 @@ def _regex_fallback(rel_path: str, lang: str, text: str) -> list[RawEdge]:
                 )
         return raw_edges
 
+    if lang == "csharp":
+        for idx, line in enumerate(text.splitlines(), start=1):
+            match = CSHARP_USING_RE.match(line)
+            if not match:
+                continue
+            target = match.group(1).strip()
+            if "=" in target:
+                target = target.split("=", 1)[-1].strip()
+            if not target:
+                continue
+            raw_edges.append(
+                RawEdge(
+                    src=rel_path,
+                    lang=lang,
+                    ref_kind=DepRefKind.IMPORT,
+                    dst_raw=target,
+                    range=DepRange(
+                        start_line=idx,
+                        start_col=0,
+                        end_line=idx,
+                        end_col=len(line),
+                    ),
+                )
+            )
+        return raw_edges
+
+    if lang == "php":
+        for idx, line in enumerate(text.splitlines(), start=1):
+            use_match = PHP_USE_RE.match(line)
+            if use_match:
+                target = use_match.group(1).strip()
+                if " as " in target.lower():
+                    target = target.rsplit(" as ", 1)[0].strip()
+                if target:
+                    raw_edges.append(
+                        RawEdge(
+                            src=rel_path,
+                            lang=lang,
+                            ref_kind=DepRefKind.IMPORT,
+                            dst_raw=target,
+                            range=DepRange(
+                                start_line=idx,
+                                start_col=0,
+                                end_line=idx,
+                                end_col=len(line),
+                            ),
+                        )
+                    )
+                continue
+            include_match = PHP_INCLUDE_RE.match(line)
+            if include_match:
+                target = include_match.group(2).strip()
+                if not target:
+                    continue
+                raw_edges.append(
+                    RawEdge(
+                        src=rel_path,
+                        lang=lang,
+                        ref_kind=DepRefKind.REQUIRE,
+                        dst_raw=target,
+                        range=DepRange(
+                            start_line=idx,
+                            start_col=0,
+                            end_line=idx,
+                            end_col=len(line),
+                        ),
+                    )
+                )
+        return raw_edges
+
     for idx, line in enumerate(text.splitlines(), start=1):
         if "import" not in line and "require" not in line:
             continue
@@ -571,6 +664,7 @@ def _regex_fallback(rel_path: str, lang: str, text: str) -> list[RawEdge]:
 def _normalize_edge(
     raw: RawEdge,
     module_map: dict[str, str],
+    csharp_map: dict[str, str],
     file_set: set[str],
     source_roots: list[str],
 ) -> DepEdge:
@@ -650,6 +744,33 @@ def _normalize_edge(
                 confidence = min(confidence, 0.9)
             else:
                 dst_kind = DepDstKind.EXTERNAL_PKG
+        dst_kind, dst_resolved_path, confidence = _maybe_infer_internal(
+            dst_raw, dst_norm, file_set, dst_kind, dst_resolved_path, confidence
+        )
+        return DepEdge(
+            src=raw.src,
+            lang=raw.lang,
+            ref_kind=raw.ref_kind,
+            dst_raw=dst_raw,
+            dst_norm=dst_norm,
+            dst_kind=dst_kind,
+            range=raw.range,
+            confidence=confidence,
+            dst_resolved_path=dst_resolved_path,
+            symbol=raw.symbol,
+            is_relative=is_relative,
+            extras=extras,
+        )
+
+    if raw.lang == "csharp":
+        dst_norm = dst_raw
+        resolved = _resolve_csharp_namespace(dst_raw, csharp_map)
+        if resolved:
+            dst_kind = DepDstKind.INTERNAL_FILE
+            dst_resolved_path = resolved
+            confidence = min(confidence, 0.8)
+        else:
+            dst_kind = DepDstKind.EXTERNAL_PKG
         dst_kind, dst_resolved_path, confidence = _maybe_infer_internal(
             dst_raw, dst_norm, file_set, dst_kind, dst_resolved_path, confidence
         )
@@ -848,7 +969,7 @@ def _infer_internal_from_nodes(
     for value in (dst_norm, dst_raw):
         if not value:
             continue
-        cleaned = value.strip().strip("\"'")
+        cleaned = value.strip().strip("\"'").replace("\\", "/")
         candidates.add(cleaned)
         if "/" in cleaned:
             candidates.add(cleaned)
@@ -907,9 +1028,54 @@ def _candidate_source_roots(repo_index: RepoIndex) -> list[str]:
             top_dirs.add(top)
             if entry.path.endswith(".py"):
                 py_dirs.add(top)
-    common = {"src", "app", "lib", "packages", "client", "server"}
+    common = {
+        "src",
+        "app",
+        "lib",
+        "packages",
+        "client",
+        "server",
+        "php",
+        "csharp",
+        "CSharp",
+    }
     roots = py_dirs | (common & top_dirs)
     return sorted(roots)
+
+
+def _build_csharp_module_map(
+    repo_index: RepoIndex, source_roots: list[str]
+) -> dict[str, str]:
+    module_map: dict[str, str] = {}
+    for entry in repo_index.files:
+        if not entry.path.endswith(".cs"):
+            continue
+        module = entry.path[:-3].replace("/", ".")
+        module_map[module] = entry.path
+        for root in source_roots:
+            prefix = f"{root}/"
+            if entry.path.startswith(prefix):
+                module_map[entry.path[len(prefix) : -3].replace("/", ".")] = entry.path
+    return module_map
+
+
+def _resolve_csharp_namespace(namespace: str, module_map: dict[str, str]) -> str | None:
+    if not namespace:
+        return None
+    if namespace in module_map:
+        return module_map[namespace]
+    parts = namespace.split(".")
+    if not parts:
+        return None
+    candidate = parts[-1]
+    if candidate in module_map:
+        return module_map[candidate]
+    # Try suffix matches to allow root stripping
+    for i in range(1, len(parts)):
+        suffix = ".".join(parts[i:])
+        if suffix in module_map:
+            return module_map[suffix]
+    return None
 
 
 def _build_python_module_map(
