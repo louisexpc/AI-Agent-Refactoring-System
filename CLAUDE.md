@@ -220,19 +220,3 @@ artifacts/<run_id>/test_gen/
 **顏色編碼**：灰色 (Pending) -> 黃色 (Processing) -> 紅色 (Error) -> 綠色 (Done)。
 **目的**：讓評審直觀理解運作過程。
 - Lrgacy code如果根本跑不起來?要怎麼驗證?
-#   實作更新
-模組實作：
-
-- `runner/test_gen/__init__.py` — 匯出 `run_overall_test`, `run_module_test`
-- `runner/test_gen/main.py` — Orchestrator，提供兩個 API
-- `runner/test_gen/file_filter.py` — Phase 1: 從 DepGraph 過濾目標語言檔案
-- `runner/test_gen/guidance_gen.py` — Phase 2: LLM 生成測試指引
-- `runner/test_gen/golden_capture.py` — Phase 3: LLM 生成呼叫腳本 + subprocess 捕獲 golden output（file 級別）
-- `runner/test_gen/test_emitter.py` — Phase 4: LLM 讀整個檔案生成完整 test file
-- `runner/test_gen/test_runner.py` — Phase 5: subprocess 跑 pytest 收集 pass/fail + coverage
-- `runner/test_gen/golden_comparator.py` — Golden Comparison: normalize 後 diff 新舊輸出
-- `runner/test_gen/output_normalizer.py` — 清洗時間戳/UUID 等非確定性欄位
-- `runner/test_gen/report_builder.py` — 彙總報告
-- `runner/test_gen/llm_adapter.py` — Vertex AI Gemini LLM client
-- `shared/test_types.py` — 所有測試相關 Pydantic models（SourceFile, GoldenRecord, OverallTestReport, ModuleTestReport 等）
-- `scripts/smoke_test_gen.py` — 開發用 smoke test（正式串接後不需要）
