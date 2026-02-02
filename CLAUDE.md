@@ -215,14 +215,3 @@ artifacts/<run_id>/logs/test_gen/
         docstrings: Recommendation : Google Python Style Guide
         ```
     ```
-#   問題&想法(還不實作)
-- 記憶庫機制 (Refactor Memory)
-為解決 LLM 在長流程中的遺忘問題，維護一個輕量級 RAGJSON 檔：
-**內容**：Key 為 Python 原始函式名，Value 為重構後的 Go 函式簽名。
-**用途**：當重構上層業務邏輯 (Level N) 時，直接查表獲取底層 (Level N-1) 的正確呼叫方式，避免參數不匹配。
-- 循環依賴處理 (Dependency Inversion)
-- 視覺化演示設計 (For Demo)
-- 在儀表板中實作互動式圖表：
-**動態節點**：正在重構的檔案節點會閃爍或高亮顯示。
-**顏色編碼**：灰色 (Pending) -> 黃色 (Processing) -> 紅色 (Error) -> 綠色 (Done)。
-**目的**：讓評審直觀理解運作過程。
