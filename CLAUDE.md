@@ -65,11 +65,63 @@ Evaluation Unit Test ──Failed──→ Generate Report → 重回這次 Stag
 
 #### Generate Test (Yoyo)
 - 策略：Golden Master / Snapshot Testing + Unit Test 雙層驗證
+- **核心概念**：golden output 的值（如 `"Race_points_firstPlace": 25`）是語言無關的業務邏輯正確答案，可跨語言、跨結構使用
 - `run_overall_test()`: 整體 golden snapshot（行為快照），不產生可執行 test file
-  - 迭代前：建立 golden baseline（捕獲舊 code 的 stdout 作為標準答案）
-  - 迭代時：同樣腳本跑新 code → normalize → diff，確認整體行為不變
+  - 迭代前：逐檔建立 golden baseline（LLM 生成呼叫腳本 → 執行舊 code → 捕獲 stdout 作為標準答案）
+  - 迭代時（介面未變）：同樣腳本跑新 code → normalize → diff
+  - 迭代時（介面已變）：需搭配 behavior mapping，LLM 讀新 code + golden values → 生成新語言測試腳本 → 比對（尚未實作）
 - `run_module_test()`: 針對單一 module 生成 + 執行 unit test（產生 pytest test file）
 - 以 file 級別為單位（沒 function 級別資料），LLM 讀整個檔案 + 依賴檔案 signatures
+
+#### Golden Comparison 的限制與跨結構方案
+
+**問題**：重構後介面幾乎一定會變（class 改名、function 拆分、換語言），現有 Golden Comparison（同一份腳本跑新 code）會直接 ImportError / AttributeError 失敗。
+
+**跨結構 Golden Comparison 方案（Behavior Mapping）**：
+```
+迭代前（已實作）：
+  逐檔讀舊 code → LLM 生成呼叫腳本 → 執行 → 記錄 golden output
+  golden output 的值是語言無關的業務正確答案
+  例：A.py → {"Race_points_first": 25, "Leaderboard_rankings": [...]}
+
+Apply Agent 重構（Apply 模組負責）：
+  A.py → race.go + leaderboard.go
+  Agent 同時輸出 behavior mapping（JSON 格式）：
+  - 哪些 golden key 對應到哪些新檔案
+  - 舊行為在新 code 裡的等價呼叫方式
+
+驗證（Generate Test 消費 mapping）：
+  LLM 讀新檔案原始碼 + 對應的 golden values
+  → 生成新語言的測試腳本（Go test / Java test / pytest）
+  → 執行新 code → 比對 golden values（機械式 JSON diff）
+
+重點：
+  - Golden values（25, [...], true）不分語言，是業務邏輯的真相
+  - LLM 只負責「讀新 code → 生成能跑的測試」，不負責判斷對錯
+  - 比較是機械式的（normalize + diff），不靠 LLM 判斷
+  - 每個檔案都要跑（不只改過的），因為依賴可能有連鎖影響
+```
+
+**Behavior Mapping 介面（Apply Agent 需輸出，尚未定義 Pydantic model）**：
+```json
+{
+  "old_file": "A.py",
+  "new_files": ["race.go", "leaderboard.go"],
+  "mappings": [
+    {
+      "golden_key": "Race_points_firstPlace",
+      "golden_value": 25,
+      "description": "First place in a race gets 25 points",
+      "new_file": "race.go",
+      "new_call_hint": "Race.Points(driver)"
+    }
+  ]
+}
+```
+- `golden_key` + `golden_value`: 來自 golden_snapshot.json
+- `new_file`: 該行為在重構後位於哪個檔案
+- `new_call_hint`: 給 LLM 的提示，實際測試腳本由 LLM 讀新 code 原始碼後生成
+- mapping 由 Apply Agent 負責產出，Generate Test 只消費
 
 #### `run_overall_test()` 內部流程（迭代前 + 迭代中都用）
 ```
@@ -78,8 +130,10 @@ Phase 2: Guidance — LLM 逐檔分析（含依賴檔案 signatures context）�
 Phase 3: Golden Capture — 逐檔生成呼叫腳本（含依賴檔案 signatures context）→ coverage run 執行舊 code → 捕獲 golden output + coverage%
   - 按 source_files list 順序處理，每個腳本獨立執行（透過 sys.path.insert 解決同目錄依賴）
   - 沒有可執行行為的檔案（純 data class / constants）會嘗試 instantiate，失敗則記錄 exit_code!=0
-Golden Comparison（僅迭代時）— 同樣腳本跑重構後 code → normalize → diff 新舊輸出
+  - golden output 的 key 採描述性命名（ClassName_methodName_scenario），作為跨結構比對的錨點
+Golden Comparison（僅迭代時，介面未變）— 同樣腳本跑重構後 code → normalize → diff 新舊輸出
   - normalize = 清洗非確定性欄位（時間戳→<TIMESTAMP>、UUID→<UUID>、記憶體位址→<ADDR>），避免誤判 FAIL
+Golden Comparison（僅迭代時，介面已變，尚未實作）— 消費 behavior mapping → LLM 生成新語言測試 → 比對 golden values
 Report — 彙總 golden comparison results → OverallTestReport
 ```
 
@@ -191,7 +245,8 @@ artifacts/<run_id>/logs/test_gen/
 ```
 - `comparison_results` 迭代前為空，迭代時包含每個檔案的 PASS/FAIL/ERROR/SKIPPED
 - `pass_rate` 迭代前為 0.0（無比較對象）
-- TODO: 考慮加入 golden capture 的 coverage（用 `coverage run` 執行腳本），作為測試充分性的參考指標
+- golden capture 已使用 `coverage run` 執行腳本，coverage_pct 記錄在各 GoldenRecord 中
+
 **module_report_*.json** — `run_module_test()` 的單模組報告(先不管)
 ```json
 { "run_id": "f3f7...",
