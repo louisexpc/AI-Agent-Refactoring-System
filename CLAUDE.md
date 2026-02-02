@@ -64,9 +64,12 @@ Evaluation Unit Test ──Failed──→ Generate Report → 重回這次 Stag
 - 分析 Module Dependency 決定修改順序
 
 #### Generate Test (Yoyo)
-- 策略：Golden Master / Snapshot Testing
-- **迭代前**：`run_overall_test()` 建立整個 repo 的 golden baseline
-- 以 file 級別為單位（沒function級別資料），LLM 讀整個檔案直接生成測試
+- 策略：Golden Master / Snapshot Testing + Unit Test 雙層驗證
+- `run_overall_test()`: 整體 golden snapshot（行為快照），不產生可執行 test file
+  - 迭代前：建立 golden baseline（捕獲舊 code 的 stdout 作為標準答案）
+  - 迭代時：同樣腳本跑新 code → normalize → diff，確認整體行為不變
+- `run_module_test()`: 針對單一 module 生成 + 執行 unit test（產生 pytest test file）
+- 以 file 級別為單位（沒 function 級別資料），LLM 讀整個檔案 + 依賴檔案 signatures
 
 #### `run_overall_test()` 內部流程（迭代前 + 迭代中都用）
 ```
@@ -124,20 +127,22 @@ module_report = run_module_test(
 #### Artifact 輸出
 ```
 artifacts/<run_id>/test_gen/
-├── source_files.json      # Phase 1: 過濾後的來源檔案
-├── guidance.json           # Phase 2: 測試指引
-├── golden_snapshot.json    # Phase 3: golden output
-├── overall_report.json     # Overall test 報告
-├── module_report_*.json    # Module test 報告
-└── emitted/                # Phase 4: 可執行測試檔
+├── source_files.json      # run_overall_test: Phase 1 過濾後的來源檔案
+├── guidance.json           # run_overall_test: Phase 2 測試指引
+├── golden_snapshot.json    # run_overall_test: Phase 3 golden output（行為快照）
+├── overall_report.json     # run_overall_test: 最終報告
+├── module_report_*.json    # run_module_test: 單模組報告
+└── emitted/                # run_module_test: Phase 4 產出的 pytest test file
     ├── test_sensor.py
     └── ...
 
 artifacts/<run_id>/logs/test_gen/
-├── golden/                    # Golden capture 的中間產物（debug 用）
-│   ├── *_script.py            # LLM 生成的呼叫腳本
+├── golden/                    # run_overall_test: golden capture 中間產物
+│   ├── *_script.py            # LLM 生成的「呼叫腳本」（非 test file）
+│   ├── *.coverage             # coverage 資料檔
 │   └── *.log                  # 腳本執行的 stdout/stderr
-└── unit_test/                 # Module test 的 pytest 執行 log
+├── module_golden/             # run_module_test: 單模組的 golden capture
+└── unit_test/                 # run_module_test: pytest 執行 log
 ```
 
 #### Artifact JSON 格式說明
