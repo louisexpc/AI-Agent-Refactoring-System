@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from api.ingestion.deps import IngestionService, get_ingestion_service
@@ -12,6 +12,7 @@ router = APIRouter(prefix="/ingestion", tags=["ingestion"])
 @router.post("/runs", response_model=StartRunResponse)
 def start_run(
     payload: StartRunRequest,
+    background_tasks: BackgroundTasks,
     service: IngestionService = Depends(get_ingestion_service),
 ) -> StartRunResponse:
     """啟動新的 ingestion run。
@@ -28,6 +29,7 @@ def start_run(
         start_prompt=payload.start_prompt,
         options=payload.options.model_dump() if payload.options else None,
     )
+    background_tasks.add_task(service.run_pipeline, run_id)
     return StartRunResponse(run_id=run_id)
 
 

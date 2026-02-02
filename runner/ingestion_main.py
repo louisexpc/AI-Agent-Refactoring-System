@@ -190,10 +190,30 @@ def run_once(repo_url: str, start_prompt: str | None, artifacts_root: Path) -> s
     )
     dep_graph_path = layout.run_dir(run.run_id) / "depgraph" / "dep_graph.json"
     dep_graph_path.write_text(dep_graph.model_dump_json(indent=2), encoding="utf-8")
+    dep_graph_light_path = (
+        layout.run_dir(run.run_id) / "depgraph" / "dep_graph_light.json"
+    )
+    dep_graph_light_path.write_text(
+        dep_graph.model_dump_json(
+            indent=2,
+            exclude={"edges": {"__all__": {"range", "symbol", "extras"}}},
+        ),
+        encoding="utf-8",
+    )
     dep_reverse_path = (
         layout.run_dir(run.run_id) / "depgraph" / "dep_reverse_index.json"
     )
     dep_reverse_path.write_text(dep_reverse.model_dump_json(indent=2), encoding="utf-8")
+    dep_reverse_light_path = (
+        layout.run_dir(run.run_id) / "depgraph" / "dep_reverse_index_light.json"
+    )
+    dep_reverse_light_path.write_text(
+        dep_reverse.model_dump_json(
+            indent=2,
+            exclude={"items": {"__all__": {"refs": {"__all__": {"range"}}}}},
+        ),
+        encoding="utf-8",
+    )
     dep_metrics_path = layout.run_dir(run.run_id) / "depgraph" / "dep_metrics.json"
     dep_metrics_path.write_text(dep_metrics.model_dump_json(indent=2), encoding="utf-8")
     external_deps_path = (
@@ -254,6 +274,7 @@ def main() -> None:
     )
     run_id = run_once(args.repo_url, args.start_prompt, artifacts_root)
     print(run_id)
+    return  # TODO: Artifact 路徑
 
 
 if __name__ == "__main__":
