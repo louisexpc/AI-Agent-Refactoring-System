@@ -1,16 +1,18 @@
-"""Phase 4：產出目標語言的可執行測試原始碼（file 級別）。
+"""Module-level Test Emitter：消費 golden values 生成 characterization test。
 
-LLM 讀整個來源檔案 + guidance + golden output，
-直接生成完整的測試檔（pytest / go test / jest）。
+讀取 after_files（重構後的原始碼）+ golden output，
+由 LanguagePlugin 生成目標語言的 test file。
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from runner.test_gen.dep_resolver import resolve_dependency_context
+from runner.test_gen.plugins import LanguagePlugin
+from shared.ingestion_types import DepGraph
 from shared.test_types import (
     EmittedTestFile,
     GoldenRecord,
@@ -18,160 +20,116 @@ from shared.test_types import (
     TestGuidance,
 )
 
-EMIT_PROMPT_TEMPLATE: str = """\
-You are a senior test engineer. Generate a complete {language} test file
-for the following source code.
-
-File path: {module_path}
-
-Source code:
-```
-{source_code}
-```
-
-Testing guidance:
-- Side effects: {side_effects}
-- Mock recommendations: {mock_recommendations}
-- Nondeterminism notes: {nondeterminism_notes}
-
-Golden output (expected behavior of the original code):
-{golden_output}
-
-Requirements:
-1. Use the standard test framework for {language}
-   (Python: pytest, Go: testing, TypeScript: jest)
-2. Decide which functions/classes are worth testing
-3. Generate test inputs: normal path, boundary values, error handling
-4. Use the golden output as reference for expected values where applicable
-5. Mock any side effects (file I/O, network, DB) as indicated in guidance
-6. Do NOT include markdown code fences, return raw source code only
-7. The test file must be self-contained and runnable
-"""
-
 
 @dataclass
-class TestCodeEmitter:
-    """將來源檔案轉為可執行測試原始碼（file 級別）。
+class ModuleTestEmitter:
+    """Module-level test emitter：為重構後的 module 生成 characterization test。
 
-    LLM 讀整個檔案後自行決定測哪些函式、用什麼 input。
-
-    Args:
-        target_language: 目標語言（python、go、typescript）。
-        llm_client: LLM 呼叫介面。
-        repo_dir: repo 根目錄。
+    Attributes:
+        repo_dir: 重構後程式碼的 repo 目錄。
+        target_language: 目標語言。
     """
 
+    repo_dir: Path
     target_language: str = "python"
-    llm_client: Any = None
-    repo_dir: Any = None
 
-    def emit_for_file(
+    def emit(
         self,
-        source_file: SourceFile,
+        after_files: list[SourceFile],
+        golden_records: list[GoldenRecord],
+        plugin: LanguagePlugin,
+        llm_client: Any,
         guidance: TestGuidance | None = None,
-        golden_record: GoldenRecord | None = None,
+        dep_graph: DepGraph | None = None,
     ) -> EmittedTestFile:
-        """為單一來源檔案生成測試檔。
+        """為一組 after_files 生成 characterization test file。
 
         Args:
-            source_file: 來源檔案。
+            after_files: module mapping 中的新檔案清單。
+            golden_records: 對應的 golden output。
+            plugin: 語言插件。
+            llm_client: LLM 呼叫介面。
             guidance: 測試指引。
-            golden_record: golden output。
+            dep_graph: 依賴圖。
 
         Returns:
             產出的測試檔案。
         """
-        return self._emit_with_llm(source_file, guidance, golden_record)
+        # 聚合 after_files 原始碼
+        source_code = self._aggregate_source(after_files)
+        module_paths = [sf.path for sf in after_files]
 
-    def emit_for_files(
-        self,
-        source_files: list[SourceFile],
-        guidances: dict[str, TestGuidance] | None = None,
-        golden_map: dict[str, GoldenRecord] | None = None,
-    ) -> list[EmittedTestFile]:
-        """為多個來源檔案生成測試檔。
+        # 收集依賴 signatures
+        dep_signatures = self._collect_dep_signatures(after_files, dep_graph)
 
-        Args:
-            source_files: 來源檔案清單。
-            guidances: path → TestGuidance 對照。
-            golden_map: path → GoldenRecord 對照。
+        # 聚合 golden values
+        golden_values: dict[str, Any] = {}
+        for rec in golden_records:
+            if isinstance(rec.output, dict):
+                golden_values.update(rec.output)
+            elif rec.output is not None:
+                golden_values[rec.file_path] = rec.output
 
-        Returns:
-            產出的測試檔案清單。
-        """
-        results: list[EmittedTestFile] = []
-        for sf in source_files:
-            g = guidances.get(sf.path) if guidances else None
-            gr = golden_map.get(sf.path) if golden_map else None
-            results.append(self.emit_for_file(sf, g, gr))
-        return results
-
-    def _emit_with_llm(
-        self,
-        source_file: SourceFile,
-        guidance: TestGuidance | None,
-        golden_record: GoldenRecord | None,
-    ) -> EmittedTestFile:
-        """用 LLM 生成完整測試檔。
-
-        Args:
-            source_file: 來源檔案。
-            guidance: 測試指引。
-            golden_record: golden output。
-
-        Returns:
-            EmittedTestFile。
-        """
-        golden_str = "Not available"
-        if golden_record and golden_record.output is not None:
-            golden_str = json.dumps(golden_record.output, indent=2, default=str)
-
-        prompt = EMIT_PROMPT_TEMPLATE.format(
-            language=self.target_language,
-            module_path=source_file.path,
-            source_code=source_file.read_content(self.repo_dir),
-            side_effects=(
-                ", ".join(guidance.side_effects) if guidance else "none identified"
-            ),
-            mock_recommendations=(
-                ", ".join(guidance.mock_recommendations)
-                if guidance
-                else "none identified"
-            ),
-            nondeterminism_notes=(
-                guidance.nondeterminism_notes if guidance else "none identified"
-            ),
-            golden_output=golden_str,
+        # 用 plugin 生成 test file
+        guidance_dict = guidance.model_dump() if guidance else None
+        content = plugin.generate_test_file(
+            new_source_code=source_code,
+            module_paths=module_paths,
+            golden_values=golden_values,
+            dep_signatures=dep_signatures,
+            guidance=guidance_dict,
+            llm_client=llm_client,
         )
 
-        response = self.llm_client.generate(prompt)
+        test_path = self._derive_test_path(module_paths)
+        source_file_str = (
+            module_paths[0] if len(module_paths) == 1 else ",".join(module_paths)
+        )
 
-        # 清除 markdown code fence
-        content = response.strip()
-        if content.startswith("```"):
-            first_newline = content.index("\n")
-            content = content[first_newline + 1 :]
-        if content.endswith("```"):
-            content = content[:-3].strip()
-
-        test_path = self._derive_test_path(source_file.path)
         return EmittedTestFile(
             path=test_path,
             language=self.target_language,
             content=content,
-            source_file=source_file.path,
+            source_file=source_file_str,
         )
 
-    def _derive_test_path(self, module_path: str) -> str:
-        """根據模組路徑推導測試檔路徑。
+    def _aggregate_source(self, files: list[SourceFile]) -> str:
+        """聚合多個檔案的原始碼，帶路徑標記。"""
+        if len(files) == 1:
+            return files[0].read_content(self.repo_dir)
 
-        Args:
-            module_path: 原始模組路徑。
+        sections: list[str] = []
+        for sf in files:
+            content = sf.read_content(self.repo_dir)
+            sections.append(
+                f"File: {sf.path}\n"
+                f"Directory: {str(Path(sf.path).parent)}\n"
+                f"Module name: {Path(sf.path).stem}\n"
+                f"```\n{content}\n```"
+            )
+        return "\n\n".join(sections)
 
-        Returns:
-            測試檔案路徑。
-        """
-        p = Path(module_path)
+    def _collect_dep_signatures(
+        self,
+        files: list[SourceFile],
+        dep_graph: DepGraph | None,
+    ) -> str:
+        """收集依賴 signatures。"""
+        if dep_graph is None:
+            return ""
+
+        seen: set[str] = set()
+        parts: list[str] = []
+        for sf in files:
+            ctx = resolve_dependency_context(dep_graph, sf.path, self.repo_dir)
+            if ctx and ctx not in seen:
+                seen.add(ctx)
+                parts.append(ctx)
+        return "\n".join(parts)
+
+    def _derive_test_path(self, module_paths: list[str]) -> str:
+        """根據模組路徑推導測試檔路徑。"""
+        p = Path(module_paths[0])
         ext_map = {
             "python": ".py",
             "go": "_test.go",

@@ -211,39 +211,55 @@ class UnitTestResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class OverallTestReport(BaseModel):
-    """run_overall_test 的輸出報告。
+class ModuleMapping(BaseModel):
+    """Stage Plan 裡的一組 before/after 檔案對應。
 
     Attributes:
-        run_id: 所屬 run 的識別碼。
-        golden_snapshot: golden baseline 記錄。
-        comparison_results: 新舊比較結果（迭代時才有）。
-        pass_rate: 通過率（0.0 ~ 1.0）。
+        before_files: 舊 repo 的檔案路徑清單（相對於 repo root）。
+        after_files: 新 repo 的檔案路徑清單（相對於 refactored repo root）。
     """
 
-    run_id: str
-    golden_snapshot: GoldenSnapshot = Field(default_factory=GoldenSnapshot)
-    comparison_results: list[ComparisonResult] = Field(default_factory=list)
-    pass_rate: float = 0.0
+    before_files: list[str]
+    after_files: list[str]
 
 
-class ModuleTestReport(BaseModel):
-    """run_module_test 的輸出報告。
+class CharacterizationRecord(BaseModel):
+    """單一 module mapping 的 characterization test 結果。
 
     Attributes:
-        run_id: 所屬 run 的識別碼。
-        file_path: 被測的來源檔案路徑。
-        can_test: LLM 判斷此 module 能否生成 unit test。
-        emitted_file: 生成的測試檔。
-        baseline_result: 舊 code 跑的 unit test 結果。
-        refactored_result: 新 code 跑的 unit test 結果。
+        module_mapping: 對應的 before/after 檔案映射。
+        golden_records: 舊 code 的 golden output。
+        emitted_test_file: LLM 生成的目標語言 test file。
+        test_result: test file 的執行結果。
         coverage_pct: 行覆蓋率。
+        tested_functions: LLM 決定測試的功能名稱（golden output keys）。
+        golden_script_path: golden capture 腳本的相對路徑。
+        emitted_test_path: 生成的 test file 的相對路徑。
+    """
+
+    module_mapping: ModuleMapping
+    golden_records: list[GoldenRecord] = Field(default_factory=list)
+    emitted_test_file: EmittedTestFile | None = None
+    test_result: UnitTestResult | None = None
+    coverage_pct: float | None = None
+    tested_functions: list[str] = Field(default_factory=list)
+    golden_script_path: str | None = None
+    emitted_test_path: str | None = None
+
+
+class StageTestReport(BaseModel):
+    """一個 Stage 的完整測試報告。
+
+    Attributes:
+        run_id: 所屬 run 的識別碼。
+        records: 每組 module mapping 的 characterization test 結果。
+        overall_pass_rate: 所有 test 的通過率（0.0 ~ 1.0）。
+        overall_coverage_pct: 平均行覆蓋率。
+        build_success: 新 code 是否能成功 build。
     """
 
     run_id: str
-    file_path: str
-    can_test: bool = False
-    emitted_file: EmittedTestFile | None = None
-    baseline_result: UnitTestResult | None = None
-    refactored_result: UnitTestResult | None = None
-    coverage_pct: float | None = None
+    records: list[CharacterizationRecord] = Field(default_factory=list)
+    overall_pass_rate: float = 0.0
+    overall_coverage_pct: float | None = None
+    build_success: bool | None = None

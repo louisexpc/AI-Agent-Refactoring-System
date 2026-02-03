@@ -12,10 +12,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # 已知的 GCP key file 路徑（專案內）
 _DEFAULT_KEY_PATH = Path(
@@ -63,18 +67,34 @@ class VertexLLMClient:
         )
         self._model = GenerativeModel(self.model_name)
 
-    def generate(self, prompt: str) -> str:
-        """送出 prompt 並取得回應文字。
+    def generate(self, prompt: str, max_retries: int = 5) -> str:
+        """送出 prompt 並取得回應文字，含 429 retry。
 
         Args:
             prompt: 完整 prompt 文字。
+            max_retries: 最大重試次數。
 
         Returns:
             LLM 回應文字。
         """
         self._ensure_init()
-        response = self._model.generate_content(prompt)
-        return response.text.strip()
+        for attempt in range(max_retries + 1):
+            try:
+                response = self._model.generate_content(prompt)
+                return response.text.strip()
+            except Exception as exc:
+                if "429" in str(exc) or "ResourceExhausted" in type(exc).__name__:
+                    wait = 2**attempt * 5  # 5, 10, 20, 40, 80 秒
+                    logger.warning(
+                        "Rate limited (attempt %d/%d), waiting %ds...",
+                        attempt + 1,
+                        max_retries + 1,
+                        wait,
+                    )
+                    time.sleep(wait)
+                    continue
+                raise
+        raise RuntimeError(f"Rate limited after {max_retries + 1} attempts")
 
 
 def create_vertex_client(

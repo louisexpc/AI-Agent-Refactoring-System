@@ -123,6 +123,43 @@ class TestGuidanceGenerator:
         response = self.llm_client.generate(prompt)
         return self._parse_response(source_file.path, response)
 
+    def build_for_module(self, source_files: list[SourceFile]) -> TestGuidance:
+        """為一組 module 檔案生成聚合的測試指引。
+
+        聚合多個檔案的原始碼，產出單一 TestGuidance。
+
+        Args:
+            source_files: module 的來源檔案清單。
+
+        Returns:
+            聚合的測試指引。
+        """
+        if len(source_files) == 1:
+            return self.build_for_single(source_files[0])
+
+        # 聚合多檔原始碼
+        sections: list[str] = []
+        all_dep_info: list[str] = []
+        for sf in source_files:
+            sections.append(f"--- {sf.path} ---\n{sf.read_content(self.repo_dir)}")
+            dep_info = resolve_dependency_context(
+                self.dep_graph, sf.path, self.repo_dir
+            )
+            if dep_info:
+                all_dep_info.append(dep_info)
+
+        combined_code = "\n\n".join(sections)
+        combined_deps = "\n".join(all_dep_info) if all_dep_info else "None"
+        module_path = ",".join(sf.path for sf in source_files)
+
+        prompt = GUIDANCE_PROMPT_TEMPLATE.format(
+            module_path=module_path,
+            source_code=combined_code,
+            dependency_info=combined_deps,
+        )
+        response = self.llm_client.generate(prompt)
+        return self._parse_response(module_path, response)
+
     def _parse_response(self, module_path: str, response: str) -> TestGuidance:
         """解析 LLM 回應為 TestGuidance。
 

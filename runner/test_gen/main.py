@@ -1,235 +1,236 @@
 """Generate Test 模組的 Orchestrator。
 
 提供兩個公開 API：
-- ``run_overall_test``: 建立 golden baseline / 執行 golden comparison。
-- ``run_module_test``: 針對單一 module 生成 + 執行 unit test。
+- ``run_characterization_test``: 單一 module mapping 的 characterization test。
+- ``run_stage_test``: 整個 Stage 的測試。
 """
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from typing import Any
 
-from runner.test_gen.file_filter import FileFilter
-from runner.test_gen.golden_capture import GoldenCaptureRunner
-from runner.test_gen.golden_comparator import GoldenComparator
+from runner.test_gen.golden_capture import ModuleGoldenCapture
 from runner.test_gen.guidance_gen import TestGuidanceGenerator
-from runner.test_gen.output_normalizer import OutputNormalizer
-from runner.test_gen.report_builder import ReportBuilder
-from runner.test_gen.test_emitter import TestCodeEmitter
-from runner.test_gen.test_runner import TestRunner
-from shared.ingestion_types import DepGraph, RepoIndex
-from shared.test_types import ModuleTestReport, OverallTestReport
+from runner.test_gen.plugins import get_plugin
+from runner.test_gen.report_builder import build_stage_report, build_summary
+from runner.test_gen.test_emitter import ModuleTestEmitter
+from runner.test_gen.test_runner import ModuleTestRunner
+from shared.ingestion_types import DepGraph
+from shared.test_types import (
+    CharacterizationRecord,
+    ModuleMapping,
+    SourceFile,
+    StageTestReport,
+)
+
+logger = logging.getLogger(__name__)
 
 
-def run_overall_test(
+def run_characterization_test(
     run_id: str,
     repo_dir: Path,
+    refactored_repo_dir: Path,
+    before_files: list[str],
+    after_files: list[str],
     dep_graph: DepGraph,
-    repo_index: RepoIndex,
-    llm_client: Any = None,
+    llm_client: Any,
     artifacts_root: Path = Path("artifacts"),
+    source_language: str = "python",
     target_language: str = "python",
-    refactored_repo_dir: Path | None = None,
-) -> OverallTestReport:
-    """執行整體 golden test pipeline。
-
-    iteration=0 時建立 golden baseline；
-    有 refactored_repo_dir 時執行 golden comparison。
+) -> CharacterizationRecord:
+    """單一 module mapping 的 characterization test。
 
     Args:
         run_id: 所屬 run 的識別碼。
-        repo_dir: 舊程式碼（snapshot）的 repo 目錄。
+        repo_dir: 舊程式碼的 repo 目錄。
+        refactored_repo_dir: 重構後程式碼目錄。
+        before_files: module 的舊檔案路徑清單。
+        after_files: module 的新檔案路徑清單。
         dep_graph: 依賴圖。
-        repo_index: 檔案索引。
         llm_client: LLM 呼叫介面。
         artifacts_root: artifacts 根目錄。
-        target_language: 目標語言。
-        refactored_repo_dir: 重構後程式碼目錄（None 則只建 baseline）。
+        source_language: 舊 code 語言。
+        target_language: 新 code 語言。
 
     Returns:
-        OverallTestReport。
+        CharacterizationRecord。
     """
-    test_gen_dir = artifacts_root / run_id / "test_gen"
-    test_gen_dir.mkdir(parents=True, exist_ok=True)
-    logs_dir = artifacts_root / run_id / "logs" / "test_gen"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    # 新結構：golden/ 和 tests/ 攤平
+    run_dir = artifacts_root / run_id
+    golden_dir = run_dir / "golden"
+    tests_dir = run_dir / "tests"
+    for d in [golden_dir, tests_dir]:
+        d.mkdir(parents=True, exist_ok=True)
 
-    # Phase 1: 過濾目標語言檔案
-    file_filter = FileFilter(repo_dir=repo_dir)
-    source_files = file_filter.filter(dep_graph, repo_index, target_language)
-    _write_json(
-        test_gen_dir / "source_files.json",
-        {"files": [sf.model_dump() for sf in source_files]},
-    )
+    mapping = ModuleMapping(before_files=before_files, after_files=after_files)
 
-    # Phase 2: LLM 生成測試指引
+    # 取得 plugins
+    old_plugin = get_plugin(source_language)
+    new_plugin = get_plugin(target_language)
+
+    # 建立 SourceFile 物件
+    old_sources = [SourceFile(path=p, lang=source_language) for p in before_files]
+    new_sources = [SourceFile(path=p, lang=target_language) for p in after_files]
+
+    # Phase 2: Guidance
     guidance_gen = TestGuidanceGenerator(
         llm_client=llm_client, repo_dir=repo_dir, dep_graph=dep_graph
     )
-    guidance_index = guidance_gen.build_for_files(source_files)
-    _write_json(test_gen_dir / "guidance.json", guidance_index)
+    guidance = guidance_gen.build_for_module(old_sources)
 
-    # Phase 3: Golden Capture
-    capture = GoldenCaptureRunner(
+    # Phase 3: Golden Capture（用舊 code + 舊語言 plugin）
+    capture = ModuleGoldenCapture(
         repo_dir=repo_dir,
-        logs_dir=logs_dir / "golden",
+        logs_dir=golden_dir,
+    )
+    golden_records = capture.run(
+        before_files=old_sources,
+        plugin=old_plugin,
         llm_client=llm_client,
+        guidance=guidance,
         dep_graph=dep_graph,
-        guidance_index=guidance_index,
     )
-    golden_snapshot = capture.run(source_files)
-    _write_json(test_gen_dir / "golden_snapshot.json", golden_snapshot)
 
-    # Golden Comparison（有重構後的 repo 時）
-    comparison_results = []
-    if refactored_repo_dir is not None:
-        normalizer = OutputNormalizer()
-        comparator = GoldenComparator(
-            refactored_repo_dir=refactored_repo_dir,
-            logs_dir=logs_dir,
-            normalizer=normalizer,
-        )
-        comparison_results = comparator.run(source_files, golden_snapshot)
+    # 提取 tested_functions（golden output 的 keys）
+    tested_functions: list[str] = []
+    for gr in golden_records:
+        if isinstance(gr.output, dict):
+            tested_functions.extend(gr.output.keys())
 
-    # 建立報告
-    builder = ReportBuilder()
-    report = builder.build(
-        run_id=run_id,
-        golden_snapshot=golden_snapshot,
-        comparison_results=comparison_results,
+    # Phase 4: Test Emitter（用新 code + 新語言 plugin）
+    emitter = ModuleTestEmitter(
+        repo_dir=refactored_repo_dir,
+        target_language=target_language,
     )
-    _write_json(test_gen_dir / "overall_report.json", report)
+    emitted = emitter.emit(
+        after_files=new_sources,
+        golden_records=golden_records,
+        plugin=new_plugin,
+        llm_client=llm_client,
+        guidance=guidance,
+        dep_graph=dep_graph,
+    )
 
-    return report
+    # 寫入 emitted 測試檔到 tests/
+    emitted_path = tests_dir / Path(emitted.path).name
+    emitted_path.write_text(emitted.content, encoding="utf-8")
+
+    # Phase 5: Test Runner（用新 code + 新語言 plugin）
+    runner = ModuleTestRunner(
+        work_dir=refactored_repo_dir,
+        test_dir=tests_dir,
+        logs_dir=tests_dir,  # log 也放 tests/
+    )
+    test_result = runner.run(test_file=emitted, plugin=new_plugin)
+
+    # 組裝 CharacterizationRecord
+    coverage_pct = test_result.coverage_pct
+
+    # 計算 golden_script_path（相對路徑）
+    safe_name = before_files[0].replace("/", "_").replace(".", "_")
+    if len(before_files) > 1:
+        safe_name += "_module"
+    golden_script_path = f"golden/{safe_name}_script.py"
+    emitted_test_path = f"tests/{Path(emitted.path).name}"
+
+    return CharacterizationRecord(
+        module_mapping=mapping,
+        golden_records=golden_records,
+        emitted_test_file=emitted,
+        test_result=test_result,
+        coverage_pct=coverage_pct,
+        tested_functions=tested_functions,
+        golden_script_path=golden_script_path,
+        emitted_test_path=emitted_test_path,
+    )
 
 
-def run_module_test(
+def run_stage_test(
     run_id: str,
     repo_dir: Path,
-    file_path: str,
-    llm_client: Any = None,
+    refactored_repo_dir: Path,
+    stage_mappings: list[ModuleMapping],
+    dep_graph: DepGraph,
+    llm_client: Any,
     artifacts_root: Path = Path("artifacts"),
+    source_language: str = "python",
     target_language: str = "python",
-    refactored_repo_dir: Path | None = None,
-) -> ModuleTestReport:
-    """針對單一 module 生成 + 執行 unit test。
-
-    LLM 讀取來源檔案，判斷能否生成 unit test，
-    能的話生成並執行，回傳結果。
+) -> StageTestReport:
+    """整個 Stage 的測試，loop over mappings。
 
     Args:
         run_id: 所屬 run 的識別碼。
-        repo_dir: 舊程式碼（snapshot）的 repo 目錄。
-        file_path: 要測的檔案路徑（相對於 repo root）。
+        repo_dir: 舊程式碼的 repo 目錄。
+        refactored_repo_dir: 重構後程式碼目錄。
+        stage_mappings: Stage Plan 的 module mappings。
+        dep_graph: 依賴圖。
         llm_client: LLM 呼叫介面。
         artifacts_root: artifacts 根目錄。
-        target_language: 目標語言。
-        refactored_repo_dir: 重構後程式碼目錄。
+        source_language: 舊 code 語言。
+        target_language: 新 code 語言。
 
     Returns:
-        ModuleTestReport。
+        StageTestReport。
     """
-    test_gen_dir = artifacts_root / run_id / "test_gen"
-    emitted_dir = test_gen_dir / "emitted"
-    emitted_dir.mkdir(parents=True, exist_ok=True)
-    logs_dir = artifacts_root / run_id / "logs" / "test_gen" / "unit_test"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    records: list[CharacterizationRecord] = []
 
-    # 讀取來源檔案
-    file_filter = FileFilter(repo_dir=repo_dir)
-    source_file = file_filter.filter_single(file_path)
-
-    if source_file is None:
-        return ModuleTestReport(
-            run_id=run_id,
-            file_path=file_path,
-            can_test=False,
+    for mapping in stage_mappings:
+        logger.info(
+            "Running characterization test: %s -> %s",
+            mapping.before_files,
+            mapping.after_files,
         )
+        try:
+            record = run_characterization_test(
+                run_id=run_id,
+                repo_dir=repo_dir,
+                refactored_repo_dir=refactored_repo_dir,
+                before_files=mapping.before_files,
+                after_files=mapping.after_files,
+                dep_graph=dep_graph,
+                llm_client=llm_client,
+                artifacts_root=artifacts_root,
+                source_language=source_language,
+                target_language=target_language,
+            )
+            records.append(record)
+        except Exception:
+            logger.exception(
+                "Failed characterization test for %s", mapping.before_files
+            )
+            records.append(CharacterizationRecord(module_mapping=mapping))
 
-    # 生成 guidance
-    guidance_gen = TestGuidanceGenerator(llm_client=llm_client, repo_dir=repo_dir)
-    guidance = guidance_gen.build_for_single(source_file)
-
-    # 生成 golden record（用舊 code 跑）
-    golden_logs = artifacts_root / run_id / "logs" / "test_gen" / "module_golden"
-    golden_logs.mkdir(parents=True, exist_ok=True)
-    capture = GoldenCaptureRunner(
-        repo_dir=repo_dir,
-        logs_dir=golden_logs,
-        llm_client=llm_client,
+    # Build check（用新語言 plugin）
+    new_plugin = get_plugin(target_language)
+    build_ok, build_output = new_plugin.check_build(
+        repo_dir=refactored_repo_dir, timeout=60
     )
-    golden_snapshot = capture.run([source_file])
-    golden_record = golden_snapshot.records[0] if golden_snapshot.records else None
+    logger.info("Build check: success=%s, output=%s", build_ok, build_output[:200])
 
-    # 生成 unit test
-    emitter = TestCodeEmitter(
-        target_language=target_language,
-        llm_client=llm_client,
-        repo_dir=repo_dir,
-    )
-    emitted = emitter.emit_for_file(source_file, guidance, golden_record)
-
-    # 寫入 emitted 測試檔
-    emitted_path = emitted_dir / Path(emitted.path).name
-    emitted_path.write_text(emitted.content, encoding="utf-8")
-
-    # 跑 baseline（舊 code）
-    baseline_result = None
-    runner = TestRunner(
-        repo_dir=repo_dir,
-        test_dir=emitted_dir,
-        logs_dir=logs_dir,
-    )
-    results = runner.run([emitted])
-    if results:
-        baseline_result = results[0]
-
-    # 跑重構後 code（如有）
-    refactored_result = None
-    if refactored_repo_dir is not None:
-        runner_ref = TestRunner(
-            repo_dir=refactored_repo_dir,
-            test_dir=emitted_dir,
-            logs_dir=logs_dir,
-        )
-        ref_results = runner_ref.run([emitted])
-        if ref_results:
-            refactored_result = ref_results[0]
-
-    # 取 coverage
-    coverage_pct = None
-    final_result = refactored_result or baseline_result
-    if final_result and final_result.coverage_pct is not None:
-        coverage_pct = final_result.coverage_pct
-
-    report = ModuleTestReport(
+    # 建立報告
+    report = build_stage_report(
         run_id=run_id,
-        file_path=file_path,
-        can_test=True,
-        emitted_file=emitted,
-        baseline_result=baseline_result,
-        refactored_result=refactored_result,
-        coverage_pct=coverage_pct,
+        records=records,
+        build_success=build_ok,
     )
 
-    _write_json(
-        test_gen_dir / f"module_report_{Path(file_path).stem}.json",
-        report,
-    )
+    # 寫入報告
+    run_dir = artifacts_root / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(run_dir / "stage_report.json", report)
+
+    # 寫入 summary
+    summary = build_summary(report)
+    _write_json(run_dir / "summary.json", summary)
 
     return report
 
 
 def _write_json(path: Path, model: Any) -> None:
-    """將 Pydantic model 或 dict 序列化為 JSON 寫入檔案。
-
-    Args:
-        path: 輸出路徑。
-        model: Pydantic BaseModel 實例或 dict。
-    """
-    import json
-
+    """將 Pydantic model 或 dict 序列化為 JSON 寫入檔案。"""
     if hasattr(model, "model_dump_json"):
         path.write_text(model.model_dump_json(indent=2), encoding="utf-8")
     else:
