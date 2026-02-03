@@ -176,47 +176,163 @@ artifacts/<run_id>/
 }
 ```
 
-#### stage_report.json (摘要)
+#### stage_report.json 完整欄位說明
 
 ```json
 {
   "run_id": "test_result",
-  "records": [
-    {
-      "module_mapping": {
-        "before_files": ["Python/Leaderboard/leaderboard.py"],
-        "after_files": ["Python/Leaderboard/leaderboard.py"]
-      },
-      "golden_records": [
-        {
-          "file_path": "Python/Leaderboard/leaderboard.py",
-          "output": {
-            "Race_points_first_place": 25,
-            "Leaderboard_driver_rankings": ["Max", "Charles"]
-          },
-          "exit_code": 0,
-          "coverage_pct": 100.0
-        }
-      ],
-      "test_result": {
-        "total": 6,
-        "passed": 6,
-        "failed": 0,
-        "errored": 0,
-        "coverage_pct": 86.05
-      },
-      "tested_functions": [
-        "Race_points_first_place",
-        "Leaderboard_driver_rankings"
-      ],
-      "golden_script_path": "golden/Python_Leaderboard_leaderboard_py_script.py",
-      "emitted_test_path": "tests/test_leaderboard.py"
-    }
-  ],
+  "records": [...],
   "overall_pass_rate": 1.0,
   "overall_coverage_pct": 86.05,
   "build_success": true
 }
+```
+
+##### 頂層欄位
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `run_id` | string | 本次執行的唯一識別碼 |
+| `records` | array | 每個 module mapping 的測試結果（詳見下方） |
+| `overall_pass_rate` | float | 所有測試的通過率 (0.0~1.0)，計算方式：`總 passed / 總 tests` |
+| `overall_coverage_pct` | float | 所有 module 的平均行覆蓋率 |
+| `build_success` | bool | 新程式碼是否能成功編譯（用 `python -m compileall` 檢查） |
+
+##### records[i] - 單一 Module 的測試結果
+
+```json
+{
+  "module_mapping": {...},
+  "golden_records": [...],
+  "emitted_test_file": {...},
+  "test_result": {...},
+  "coverage_pct": 86.05,
+  "tested_functions": [...],
+  "golden_script_path": "golden/..._script.py",
+  "emitted_test_path": "tests/test_xxx.py"
+}
+```
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `module_mapping` | object | 這組測試對應的 before/after 檔案映射 |
+| `golden_records` | array | 執行舊程式碼得到的 golden output（可能有多筆） |
+| `emitted_test_file` | object | LLM 生成的測試檔案內容 |
+| `test_result` | object | 執行測試檔案的結果 |
+| `coverage_pct` | float | 本 module 的行覆蓋率 |
+| `tested_functions` | array | Golden output 中的所有 key（代表測了哪些功能） |
+| `golden_script_path` | string | Golden capture 腳本的相對路徑 |
+| `emitted_test_path` | string | 生成的測試檔案的相對路徑 |
+
+##### module_mapping - 檔案映射
+
+```json
+{
+  "before_files": ["Python/Leaderboard/leaderboard.py"],
+  "after_files": ["Python/Leaderboard/leaderboard.py"]
+}
+```
+
+| 欄位 | 說明 |
+|------|------|
+| `before_files` | 舊 repo 中的檔案路徑（用來生成 golden output） |
+| `after_files` | 新 repo 中的檔案路徑（被測試的對象） |
+
+##### golden_records[i] - Golden Output 記錄
+
+```json
+{
+  "file_path": "Python/Leaderboard/leaderboard.py",
+  "output": {
+    "Race_points_first_place": 25,
+    "Leaderboard_driver_rankings": ["Max", "Charles"]
+  },
+  "exit_code": 0,
+  "stderr_snippet": null,
+  "duration_ms": 176,
+  "coverage_pct": 100.0
+}
+```
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `file_path` | string | 對應的來源檔案 |
+| `output` | object | **Golden Output 核心資料**：key 是測試項目描述，value 是執行舊程式碼的結果 |
+| `exit_code` | int | Golden capture 腳本的結束碼（0=成功） |
+| `stderr_snippet` | string | 錯誤輸出片段（debug 用） |
+| `duration_ms` | int | 執行時間（毫秒） |
+| `coverage_pct` | float | 執行 golden capture 時的行覆蓋率 |
+
+##### emitted_test_file - LLM 生成的測試檔
+
+```json
+{
+  "path": "Python/Leaderboard/test_leaderboard.py",
+  "language": "python",
+  "content": "import sys\nimport pytest\n...",
+  "source_file": "Python/Leaderboard/leaderboard.py"
+}
+```
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `path` | string | 測試檔案的路徑（相對於 module） |
+| `language` | string | 目標語言（python/go/java） |
+| `content` | string | **完整的測試程式碼**（LLM 生成，包含 golden values 的 assert） |
+| `source_file` | string | 測試對應的來源檔案 |
+
+##### test_result - 測試執行結果
+
+```json
+{
+  "test_file": "Python/Leaderboard/test_leaderboard.py",
+  "total": 6,
+  "passed": 6,
+  "failed": 0,
+  "errored": 0,
+  "coverage_pct": 86.05,
+  "stdout": "===== test session starts =====\n...",
+  "stderr": "...",
+  "exit_code": 0
+}
+```
+
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `test_file` | string | 執行的測試檔案 |
+| `total` | int | 測試案例總數 |
+| `passed` | int | 通過的測試數 |
+| `failed` | int | 失敗的測試數（assert 不通過） |
+| `errored` | int | 錯誤的測試數（執行時 exception） |
+| `coverage_pct` | float | 測試覆蓋率 |
+| `stdout` | string | pytest 的標準輸出（包含測試結果） |
+| `stderr` | string | pytest 的錯誤輸出 |
+| `exit_code` | int | pytest 結束碼（0=全部通過，1=有失敗，2=錯誤） |
+
+##### 欄位關係圖
+
+```
+stage_report.json
+├── run_id                     # 執行識別碼
+├── build_success              # 編譯是否成功
+├── overall_pass_rate          # 總通過率
+├── overall_coverage_pct       # 總覆蓋率
+└── records[]                  # 每個 module 的結果
+    ├── module_mapping         # 哪些檔案被測試
+    │   ├── before_files       # 舊檔案（產生 golden）
+    │   └── after_files        # 新檔案（被驗證）
+    ├── golden_records[]       # Golden capture 結果
+    │   ├── output             # {key: value} 的 golden values
+    │   ├── exit_code          # 執行是否成功
+    │   └── coverage_pct       # 舊程式碼覆蓋率
+    ├── emitted_test_file      # LLM 生成的測試
+    │   ├── content            # 測試程式碼（含 assert golden values）
+    │   └── language           # 目標語言
+    ├── test_result            # 測試執行結果
+    │   ├── passed/failed      # 通過/失敗數
+    │   ├── coverage_pct       # 新程式碼覆蓋率
+    │   └── stdout             # pytest 輸出
+    └── tested_functions       # golden output 的 keys 清單
 ```
 
 #### Golden Output 格式說明
