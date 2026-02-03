@@ -240,6 +240,74 @@ Golden output 的 key 是 LLM 決定的描述性命名，代表「測試什麼 +
 | `ClassName_methodName_scenario` | 類別方法測試 |
 | `functionName_scenario` | 函式測試 |
 
+### Golden Output 生成與使用流程
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ Step 1: Golden Capture（只跑一次，舊 code）                   │
+│                                                               │
+│ LLM 讀舊 code → 決定測什麼 → 生成 keys + 執行得到 values      │
+│                                                               │
+│ 輸出: {"Race_points_first": 25, "Leaderboard_rank": [...]}   │
+└──────────────────────────────────────────────────────────────┘
+                              ↓
+                     keys + values 傳遞
+                              ↓
+┌──────────────────────────────────────────────────────────────┐
+│ Step 2: Test Emit（新 code）                                  │
+│                                                               │
+│ LLM 讀新 code + golden output (keys+values)                  │
+│ → 根據 key 的語意找新 code 中對應的功能                       │
+│ → 生成 test 驗證新功能的輸出 == golden value                  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**重點**：Key 只在 Golden Capture 生成一次，Test Emit **讀取**這些 keys 來對應新 code。
+
+---
+
+### TODO: 已知限制與優化方向
+
+#### 已知限制
+
+| 情境 | 問題 | 影響 |
+|------|------|------|
+| **Class 拆分/合併** | 舊 `Race.points()` → 新 `PointsCalculator.calc()` | Key 名稱不匹配，靠 LLM 語意對應 |
+| **API 結構大改** | 舊有 5 個測試項，新只能對應 3 個 | 部分測試被跳過 |
+| **新增功能** | 新 code 有舊 code 沒有的功能 | 新功能沒被 golden 覆蓋 |
+| **跨語言命名差異** | Python `snake_case` vs Go `PascalCase` | Key 對應困難 |
+
+#### 潛在優化方向
+
+```
+選項 A: 雙向對應
+┌─────────────┐     ┌─────────────┐
+│ 舊 code     │     │ 新 code     │
+│ 5 個測試項  │ ←→  │ 7 個測試項  │
+└─────────────┘     └─────────────┘
+        ↓                 ↓
+     找交集：能對應的項目 + 報告差異
+
+選項 B: Function Signature 對應
+- 不依賴 LLM 命名的 key
+- 用 AST 分析 function input/output type 自動對應
+- 更穩定但實作複雜
+
+選項 C: 接受部分覆蓋（目前做法）
+- Golden 決定要測什麼
+- 新 code 盡量對應
+- 無法對應的就跳過 + 在報告中標示
+```
+
+#### 未來改進項目
+
+- [ ] 儲存 Guidance 到檔案供 debug
+- [ ] 報告中標示「無法對應的 golden keys」
+- [ ] 支援 key mapping 設定檔（手動指定對應關係）
+- [ ] 用 AST 提取 function signature 輔助對應
+
+---
+
 ### API 使用
 
 ```python
