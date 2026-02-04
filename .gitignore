@@ -13,3 +13,7 @@ build/
 
 *.log
 *.json
+*.zip
+
+# workspace
+workspace/

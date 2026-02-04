@@ -17,6 +17,13 @@ WORKDIR /app
 # Copy lockfiles first for better caching
 COPY pyproject.toml uv.lock .python-version ./
 
+# NOTE (added): Docker-outside-of-Docker needs the docker client binary.
+# On Debian(trixie), `/usr/bin/docker` is provided by docker-cli (and is only a recommended dep of docker.io).
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends docker-cli ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+
 # Install dependencies (reproducible)
 RUN uv sync --frozen --no-install-project
 
@@ -38,4 +45,7 @@ RUN uv sync --frozen
 VOLUME ["/workspace"]
 
 # Default: run orchestrator agent with its config.
-CMD ["uv", "run", "python", "/app/orchestrator/agent.py", "--config", "/app/orchestrator/config.yaml"]
+# CMD ["uv", "run", "python", "/app/orchestrator/agent.py", "--config", "/app/orchestrator/config.yaml"]
+# Temp Unit Test
+CMD ["uv", "run", "python", "/app/orchestrator/test_v2.py"]
+# CMD ["bash"]

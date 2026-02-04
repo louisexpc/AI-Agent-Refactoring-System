@@ -20,8 +20,8 @@ prompts:
   engineer: "prompts/engineer.md"
 
 # 下面這兩個路徑，是「相對於 working_directory（repo root）」的邏輯路徑
-source_dir: "Racing-Car-Katas/Python"
-target_dir: "refactor-golang"
+source_dir: "./workspace/Racing-Car-Katas/Python"
+target_dir: "./workspace/refactor-golang"
 
 # This template is rendered via Python .format() with:
 # {working_directory}, {source_dir}, {target_dir}
