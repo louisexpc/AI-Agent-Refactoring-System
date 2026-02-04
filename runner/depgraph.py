@@ -707,7 +707,13 @@ def _normalize_edge(
             else:
                 dst_kind = DepDstKind.EXTERNAL_PKG
         dst_kind, dst_resolved_path, confidence = _maybe_infer_internal(
-            dst_raw, dst_norm, file_set, dst_kind, dst_resolved_path, confidence
+            raw.src,
+            dst_raw,
+            dst_norm,
+            file_set,
+            dst_kind,
+            dst_resolved_path,
+            confidence,
         )
         return DepEdge(
             src=raw.src,
@@ -745,7 +751,13 @@ def _normalize_edge(
             else:
                 dst_kind = DepDstKind.EXTERNAL_PKG
         dst_kind, dst_resolved_path, confidence = _maybe_infer_internal(
-            dst_raw, dst_norm, file_set, dst_kind, dst_resolved_path, confidence
+            raw.src,
+            dst_raw,
+            dst_norm,
+            file_set,
+            dst_kind,
+            dst_resolved_path,
+            confidence,
         )
         return DepEdge(
             src=raw.src,
@@ -772,7 +784,13 @@ def _normalize_edge(
         else:
             dst_kind = DepDstKind.EXTERNAL_PKG
         dst_kind, dst_resolved_path, confidence = _maybe_infer_internal(
-            dst_raw, dst_norm, file_set, dst_kind, dst_resolved_path, confidence
+            raw.src,
+            dst_raw,
+            dst_norm,
+            file_set,
+            dst_kind,
+            dst_resolved_path,
+            confidence,
         )
         return DepEdge(
             src=raw.src,
@@ -801,7 +819,13 @@ def _normalize_edge(
             dst_resolved_path = resolved_relative
             confidence = min(confidence, 0.8)
     dst_kind, dst_resolved_path, confidence = _maybe_infer_internal(
-        dst_raw, dst_norm, file_set, dst_kind, dst_resolved_path, confidence
+        raw.src,
+        dst_raw,
+        dst_norm,
+        file_set,
+        dst_kind,
+        dst_resolved_path,
+        confidence,
     )
     return DepEdge(
         src=raw.src,
@@ -963,7 +987,7 @@ def _resolve_relative_path(
 
 
 def _infer_internal_from_nodes(
-    dst_raw: str, dst_norm: str, file_set: set[str]
+    src_path: str, dst_raw: str, dst_norm: str, file_set: set[str]
 ) -> str | None:
     candidates: set[str] = set()
     for value in (dst_norm, dst_raw):
@@ -996,13 +1020,14 @@ def _infer_internal_from_nodes(
                     f"{module_path}.hpp",
                 }
             )
-    for candidate in candidates:
-        if candidate in file_set:
-            return candidate
-    return None
+    matches = [candidate for candidate in candidates if candidate in file_set]
+    if matches:
+        return _pick_best_candidate(src_path, matches)
+    return _resolve_by_dir_tree(src_path, dst_raw, file_set)
 
 
 def _maybe_infer_internal(
+    src_path: str,
     dst_raw: str,
     dst_norm: str,
     file_set: set[str],
@@ -1012,7 +1037,7 @@ def _maybe_infer_internal(
 ) -> tuple[DepDstKind, str | None, float]:
     if dst_resolved_path:
         return dst_kind, dst_resolved_path, confidence
-    inferred = _infer_internal_from_nodes(dst_raw, dst_norm, file_set)
+    inferred = _infer_internal_from_nodes(src_path, dst_raw, dst_norm, file_set)
     if inferred:
         return DepDstKind.INTERNAL_FILE, inferred, min(confidence, 0.7)
     return dst_kind, dst_resolved_path, confidence
@@ -1041,6 +1066,52 @@ def _candidate_source_roots(repo_index: RepoIndex) -> list[str]:
     }
     roots = py_dirs | (common & top_dirs)
     return sorted(roots)
+
+
+def _resolve_by_dir_tree(src_path: str, dst_raw: str, file_set: set[str]) -> str | None:
+    cleaned = dst_raw.strip().strip("\"'").replace("\\", "/")
+    if not cleaned or cleaned.startswith((".", "/")):
+        return None
+    base = cleaned.replace(".", "/")
+    suffixes = [
+        f"{base}.py",
+        f"{base}/__init__.py",
+        f"{base}.js",
+        f"{base}.jsx",
+        f"{base}.ts",
+        f"{base}.tsx",
+        f"{base}/index.js",
+        f"{base}/index.jsx",
+        f"{base}/index.ts",
+        f"{base}/index.tsx",
+        f"{base}.go",
+        f"{base}.java",
+        f"{base}.rs",
+        f"{base}.c",
+        f"{base}.h",
+        f"{base}.cpp",
+        f"{base}.hpp",
+    ]
+    matches = [path for path in file_set if path.endswith(tuple(suffixes))]
+    if not matches:
+        return None
+    return _pick_best_candidate(src_path, matches)
+
+
+def _pick_best_candidate(src_path: str, candidates: list[str]) -> str:
+    src_parts = PurePosixPath(src_path).parts
+    src_dir_parts = src_parts[:-1]
+
+    def score(path: str) -> tuple[int, int, str]:
+        parts = PurePosixPath(path).parts
+        common = 0
+        for a, b in zip(src_dir_parts, parts[:-1]):
+            if a != b:
+                break
+            common += 1
+        return (common, -len(parts), path)
+
+    return max(candidates, key=score)
 
 
 def _build_csharp_module_map(
