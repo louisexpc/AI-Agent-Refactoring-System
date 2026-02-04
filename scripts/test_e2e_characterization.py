@@ -133,6 +133,8 @@ def main() -> None:
     print("=" * 60)
     print(f"  Run ID:           {report.run_id}")
     print(f"  Build Success:    {report.build_success}")
+    if report.build_error:
+        print(f"  Build Error:      {report.build_error[:200]}")
     print(f"  Overall Pass Rate: {report.overall_pass_rate:.2%}")
     print(f"  Overall Coverage:  {report.overall_coverage_pct}")
     print(f"  Records:           {len(report.records)}")
@@ -159,6 +161,9 @@ def main() -> None:
                 f"  Test: passed={tr.passed}, failed={tr.failed}, "
                 f"errored={tr.errored}, coverage={tr.coverage_pct}"
             )
+            if tr.test_items:
+                for item in tr.test_items:
+                    print(f"    - {item.test_name}: {item.status.value}")
         else:
             print("  Test: NOT RUN")
 
@@ -169,7 +174,8 @@ def main() -> None:
     # 提示產出位置
     print("\nArtifacts written to:")
     print(f"  {ARTIFACTS_ROOT / RUN_ID / 'summary.json'}")
-    print(f"  {ARTIFACTS_ROOT / RUN_ID / 'stage_report.json'}")
+    print(f"  {ARTIFACTS_ROOT / RUN_ID / 'test_records.json'}")
+    print(f"  {ARTIFACTS_ROOT / RUN_ID / 'review.json'}")
     print(f"  {ARTIFACTS_ROOT / RUN_ID / 'golden/'}")
     print(f"  {ARTIFACTS_ROOT / RUN_ID / 'tests/'}")
 

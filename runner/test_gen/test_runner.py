@@ -11,7 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from runner.test_gen.plugins import LanguagePlugin
-from shared.test_types import EmittedTestFile, UnitTestResult
+from shared.test_types import (
+    EmittedTestFile,
+    TestItemResult,
+    TestItemStatus,
+    UnitTestResult,
+)
 
 
 @dataclass
@@ -68,6 +73,9 @@ class ModuleTestRunner:
             encoding="utf-8",
         )
 
+        # 先從完整 stdout 解析個別 test item（需要在截斷前）
+        test_items = _parse_pytest_verbose_items(run_result.stdout)
+
         # 解析 passed/failed/errored from stdout
         passed, failed, errored = _parse_test_summary(run_result.stdout)
 
@@ -81,12 +89,50 @@ class ModuleTestRunner:
             stdout=run_result.stdout[-2000:] if run_result.stdout else None,
             stderr=run_result.stderr[-1000:] if run_result.stderr else None,
             exit_code=run_result.exit_code,
+            test_items=test_items,
         )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+_VERBOSE_RE = re.compile(
+    r"^(\S+::(\S+))\s+(PASSED|FAILED|ERROR|SKIPPED)",
+    re.MULTILINE,
+)
+
+_STATUS_MAP: dict[str, TestItemStatus] = {
+    "PASSED": TestItemStatus.PASSED,
+    "FAILED": TestItemStatus.FAILED,
+    "ERROR": TestItemStatus.ERROR,
+    "SKIPPED": TestItemStatus.SKIPPED,
+}
+
+
+def _parse_pytest_verbose_items(stdout: str) -> list[TestItemResult]:
+    """從 pytest -v 輸出解析個別 test function 的結果。
+
+    匹配格式如 ``test_file.py::test_name PASSED``。
+
+    Args:
+        stdout: pytest 標準輸出。
+
+    Returns:
+        TestItemResult 清單。
+    """
+    items: list[TestItemResult] = []
+    for match in _VERBOSE_RE.finditer(stdout):
+        test_name = match.group(2)  # 只取函式名
+        status_str = match.group(3)
+        items.append(
+            TestItemResult(
+                test_name=test_name,
+                status=_STATUS_MAP[status_str],
+            )
+        )
+    return items
 
 
 def _parse_test_summary(stdout: str) -> tuple[int, int, int]:

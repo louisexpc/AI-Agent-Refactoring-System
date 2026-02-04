@@ -180,6 +180,27 @@ class EmittedTestFile(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class TestItemStatus(str, Enum):
+    """個別 test function 的執行結果。"""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    ERROR = "error"
+    SKIPPED = "skipped"
+
+
+class TestItemResult(BaseModel):
+    """單一 test function 的結果（從 pytest -v 解析）。
+
+    Attributes:
+        test_name: 測試函式名稱（例如 ``test_driver_instantiation``）。
+        status: 通過/失敗/錯誤/跳過。
+    """
+
+    test_name: str
+    status: TestItemStatus
+
+
 class UnitTestResult(BaseModel):
     """單一 emitted test file 的執行結果。
 
@@ -193,6 +214,7 @@ class UnitTestResult(BaseModel):
         stdout: pytest stdout 摘要。
         stderr: pytest stderr 摘要。
         exit_code: pytest 結束碼。
+        test_items: 個別 test function 的結果清單。
     """
 
     test_file: str
@@ -204,6 +226,7 @@ class UnitTestResult(BaseModel):
     stdout: str | None = None
     stderr: str | None = None
     exit_code: int | None = None
+    test_items: list[TestItemResult] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +271,7 @@ class CharacterizationRecord(BaseModel):
 
 
 class StageTestReport(BaseModel):
-    """一個 Stage 的完整測試報告。
+    """一個 Stage 的完整測試報告（in-memory 用，不再直接寫檔）。
 
     Attributes:
         run_id: 所屬 run 的識別碼。
@@ -256,6 +279,7 @@ class StageTestReport(BaseModel):
         overall_pass_rate: 所有 test 的通過率（0.0 ~ 1.0）。
         overall_coverage_pct: 平均行覆蓋率。
         build_success: 新 code 是否能成功 build。
+        build_error: build 失敗時的錯誤訊息。
     """
 
     run_id: str
@@ -263,3 +287,154 @@ class StageTestReport(BaseModel):
     overall_pass_rate: float = 0.0
     overall_coverage_pct: float | None = None
     build_success: bool | None = None
+    build_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# summary.json model
+# ---------------------------------------------------------------------------
+
+
+class StageSummary(BaseModel):
+    """summary.json 的資料模型。
+
+    Attributes:
+        run_id: 所屬 run 的識別碼。
+        build_success: 新 code 是否能成功 build。
+        build_error: build 失敗時的錯誤訊息。
+        overall_pass_rate: 所有 test 的通過率。
+        overall_coverage_pct: 平均行覆蓋率。
+        total_modules: 測試的 module 數量。
+        total_passed: 通過的 test 數量。
+        total_failed: 失敗的 test 數量。
+        total_errored: 錯誤的 test 數量。
+    """
+
+    run_id: str
+    build_success: bool | None = None
+    build_error: str | None = None
+    overall_pass_rate: float = 0.0
+    overall_coverage_pct: float | None = None
+    total_modules: int = 0
+    total_passed: int = 0
+    total_failed: int = 0
+    total_errored: int = 0
+
+
+# ---------------------------------------------------------------------------
+# test_records.json models
+# ---------------------------------------------------------------------------
+
+
+class ModuleTestRecord(BaseModel):
+    """單一 module 的事實記錄（純資料，無 LLM 分析）。
+
+    Attributes:
+        before_files: 舊 repo 的檔案路徑清單。
+        after_files: 新 repo 的檔案路徑清單。
+        golden_output: 舊 code 的 golden output dict。
+        golden_exit_code: golden capture script 的 exit code。
+        golden_coverage_pct: golden capture 的覆蓋率。
+        tested_functions: golden output 的 keys 清單。
+        test_file_path: 生成的測試檔相對路徑。
+        golden_script_path: golden capture 腳本相對路徑。
+        test_items: 個別 test function 的結果。
+        aggregate_passed: 通過數。
+        aggregate_failed: 失敗數。
+        aggregate_errored: 錯誤數。
+        coverage_pct: 測試覆蓋率。
+        test_exit_code: pytest exit code。
+    """
+
+    before_files: list[str]
+    after_files: list[str]
+    golden_output: Any = None
+    golden_exit_code: int | None = None
+    golden_coverage_pct: float | None = None
+    tested_functions: list[str] = Field(default_factory=list)
+    test_file_path: str | None = None
+    golden_script_path: str | None = None
+    test_items: list[TestItemResult] = Field(default_factory=list)
+    aggregate_passed: int = 0
+    aggregate_failed: int = 0
+    aggregate_errored: int = 0
+    coverage_pct: float | None = None
+    test_exit_code: int | None = None
+
+
+class TestRecords(BaseModel):
+    """test_records.json 的 root model。
+
+    Attributes:
+        run_id: 所屬 run 的識別碼。
+        modules: 每個 module 的事實記錄。
+    """
+
+    run_id: str
+    modules: list[ModuleTestRecord] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# review.json models
+# ---------------------------------------------------------------------------
+
+
+class RiskSeverity(str, Enum):
+    """風險嚴重程度。"""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class RiskWarning(BaseModel):
+    """LLM 識別的風險項。
+
+    Attributes:
+        description: 風險描述。
+        severity: 嚴重程度。
+        tested_by_golden: 是否已被 golden test 覆蓋。
+    """
+
+    description: str
+    severity: RiskSeverity
+    tested_by_golden: bool = False
+
+
+class ModuleReview(BaseModel):
+    """單一 module 的 LLM 點評。
+
+    Attributes:
+        before_files: 舊 repo 的檔案路徑清單。
+        after_files: 新 repo 的檔案路徑清單。
+        semantic_diff: 新舊 code 的行為差異分析。
+        test_purpose: 測試目的說明。
+        result_analysis: 測試結果點評。
+        failures_ignorable: 失敗是否可忽略。
+        ignorable_reason: 可忽略的原因。
+        risk_warnings: 風險清單。
+    """
+
+    before_files: list[str]
+    after_files: list[str]
+    semantic_diff: str = ""
+    test_purpose: str = ""
+    result_analysis: str = ""
+    failures_ignorable: bool = False
+    ignorable_reason: str | None = None
+    risk_warnings: list[RiskWarning] = Field(default_factory=list)
+
+
+class Review(BaseModel):
+    """review.json 的 root model。
+
+    Attributes:
+        run_id: 所屬 run 的識別碼。
+        modules: 每個 module 的 LLM 點評。
+        overall_assessment: 跨模組的總體評估。
+    """
+
+    run_id: str
+    modules: list[ModuleReview] = Field(default_factory=list)
+    overall_assessment: str | None = None

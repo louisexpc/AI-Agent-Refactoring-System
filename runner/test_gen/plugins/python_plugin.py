@@ -241,13 +241,12 @@ class PythonPlugin(LanguagePlugin):
                 env=env,
             )
 
-            passed, failed, errored = _parse_pytest_summary(result.stdout)
             coverage_pct = _parse_pytest_coverage(work_dir, result.stdout)
 
             return TestRunResult(
                 exit_code=result.returncode,
-                stdout=result.stdout[-2000:] if result.stdout else "",
-                stderr=result.stderr[-1000:] if result.stderr else "",
+                stdout=result.stdout or "",
+                stderr=result.stderr or "",
                 coverage_pct=coverage_pct,
             )
         except subprocess.TimeoutExpired:
@@ -339,21 +338,6 @@ def _read_coverage(cov_data: Path) -> float | None:
         return None
     except Exception:
         return None
-
-
-def _parse_pytest_summary(stdout: str) -> tuple[int, int, int]:
-    """從 pytest stdout 解析 passed/failed/error 數量。"""
-    passed = failed = errored = 0
-    match = re.search(r"(\d+) passed", stdout)
-    if match:
-        passed = int(match.group(1))
-    match = re.search(r"(\d+) failed", stdout)
-    if match:
-        failed = int(match.group(1))
-    match = re.search(r"(\d+) error", stdout)
-    if match:
-        errored = int(match.group(1))
-    return passed, failed, errored
 
 
 def _parse_pytest_coverage(work_dir: Path, stdout: str) -> float | None:

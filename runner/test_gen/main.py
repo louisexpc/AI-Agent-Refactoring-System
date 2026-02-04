@@ -1,8 +1,10 @@
 """Generate Test 模組的 Orchestrator。
 
-提供兩個公開 API：
-- ``run_characterization_test``: 單一 module mapping 的 characterization test。
-- ``run_stage_test``: 整個 Stage 的測試。
+公開 API：
+- ``run_stage_test``: 整個 Stage 的測試（外部入口）。
+
+內部函式：
+- ``run_characterization_test``: 單一 module mapping 的測試（由 run_stage_test 呼叫）。
 """
 
 from __future__ import annotations
@@ -15,7 +17,12 @@ from typing import Any
 from runner.test_gen.golden_capture import ModuleGoldenCapture
 from runner.test_gen.guidance_gen import TestGuidanceGenerator
 from runner.test_gen.plugins import get_plugin
-from runner.test_gen.report_builder import build_stage_report, build_summary
+from runner.test_gen.report_builder import (
+    build_stage_report,
+    build_summary,
+    build_test_records,
+)
+from runner.test_gen.review_gen import ReviewGenerator
 from runner.test_gen.test_emitter import ModuleTestEmitter
 from runner.test_gen.test_runner import ModuleTestRunner
 from shared.ingestion_types import DepGraph
@@ -208,23 +215,37 @@ def run_stage_test(
     build_ok, build_output = new_plugin.check_build(
         repo_dir=refactored_repo_dir, timeout=60
     )
+    build_error = build_output if not build_ok else None
     logger.info("Build check: success=%s, output=%s", build_ok, build_output[:200])
 
-    # 建立報告
+    # 建立 in-memory 報告
     report = build_stage_report(
         run_id=run_id,
         records=records,
         build_success=build_ok,
+        build_error=build_error,
     )
 
-    # 寫入報告
+    # 寫入三個輸出檔案
     run_dir = artifacts_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(run_dir / "stage_report.json", report)
 
-    # 寫入 summary
+    # 1. summary.json（統計）
     summary = build_summary(report)
     _write_json(run_dir / "summary.json", summary)
+
+    # 2. test_records.json（事實）
+    test_records = build_test_records(run_id=run_id, records=records)
+    _write_json(run_dir / "test_records.json", test_records)
+
+    # 3. review.json（LLM 分析）
+    reviewer = ReviewGenerator(
+        llm_client=llm_client,
+        repo_dir=repo_dir,
+        refactored_repo_dir=refactored_repo_dir,
+    )
+    review = reviewer.generate_review(run_id=run_id, records=records)
+    _write_json(run_dir / "review.json", review)
 
     return report
 
