@@ -125,11 +125,15 @@ def run_characterization_test(
     emitted_path = tests_dir / Path(emitted.path).name
     emitted_path.write_text(emitted.content, encoding="utf-8")
 
+    # 計算 source_dirs：from file paths 取 unique 的 parent directories
+    source_dirs = list({str(Path(p).parent) for p in after_files})
+
     # Phase 5: Test Runner（用新 code + 新語言 plugin）
     runner = ModuleTestRunner(
         work_dir=refactored_repo_dir,
         test_dir=tests_dir,
         logs_dir=tests_dir,  # log 也放 tests/
+        source_dirs=source_dirs,
     )
     test_result = runner.run(test_file=emitted, plugin=new_plugin)
 

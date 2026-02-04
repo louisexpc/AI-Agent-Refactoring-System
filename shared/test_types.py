@@ -195,10 +195,12 @@ class TestItemResult(BaseModel):
     Attributes:
         test_name: 測試函式名稱（例如 ``test_driver_instantiation``）。
         status: 通過/失敗/錯誤/跳過。
+        failure_reason: 失敗或錯誤時的簡短原因（從 pytest short summary 解析）。
     """
 
     test_name: str
     status: TestItemStatus
+    failure_reason: str | None = None
 
 
 class UnitTestResult(BaseModel):
@@ -402,6 +404,24 @@ class RiskWarning(BaseModel):
     tested_by_golden: bool = False
 
 
+class TestItemReview(BaseModel):
+    """單一 test function 的 LLM 點評。
+
+    Attributes:
+        test_name: 測試函式名稱。
+        test_purpose: 該測試的目的說明。
+        result_analysis: 測試結果分析（通過/失敗原因）。
+        failures_ignorable: 失敗是否可忽略。
+        ignorable_reason: 可忽略的原因。
+    """
+
+    test_name: str
+    test_purpose: str = ""
+    result_analysis: str = ""
+    failures_ignorable: bool = False
+    ignorable_reason: str | None = None
+
+
 class ModuleReview(BaseModel):
     """單一 module 的 LLM 點評。
 
@@ -409,21 +429,15 @@ class ModuleReview(BaseModel):
         before_files: 舊 repo 的檔案路徑清單。
         after_files: 新 repo 的檔案路徑清單。
         semantic_diff: 新舊 code 的行為差異分析。
-        test_purpose: 測試目的說明。
-        result_analysis: 測試結果點評。
-        failures_ignorable: 失敗是否可忽略。
-        ignorable_reason: 可忽略的原因。
         risk_warnings: 風險清單。
+        test_item_reviews: 每個 test function 的 LLM 點評。
     """
 
     before_files: list[str]
     after_files: list[str]
     semantic_diff: str = ""
-    test_purpose: str = ""
-    result_analysis: str = ""
-    failures_ignorable: bool = False
-    ignorable_reason: str | None = None
     risk_warnings: list[RiskWarning] = Field(default_factory=list)
+    test_item_reviews: list[TestItemReview] = Field(default_factory=list)
 
 
 class Review(BaseModel):

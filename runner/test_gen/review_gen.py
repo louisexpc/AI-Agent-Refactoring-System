@@ -1,9 +1,9 @@
 """LLM Review Generator：對重構結果進行語意分析與風險評估。
 
 讀取新舊原始碼 + 測試結果，由 LLM 生成 review.json 的內容，包含：
-- Semantic diff（行為差異分析）
-- 測試結果點評
-- 風險警告（severity + tested_by_golden）
+- Semantic diff（行為差異分析，per-module）
+- 風險警告（severity + tested_by_golden，per-module）
+- Per-test-item 點評（test_purpose + result_analysis + failures_ignorable）
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from shared.test_types import (
     RiskSeverity,
     RiskWarning,
     SourceFile,
+    TestItemReview,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,30 +43,37 @@ New code (after refactoring):
 Golden output (expected behavior captured from old code):
 {golden_output}
 
-Test results:
+Test results summary:
 - Total: {total}, Passed: {passed}, Failed: {failed}, Errored: {errored}
 - Exit code: {exit_code}
-- Per-test results:
+
+Per-test results (with failure reasons if available):
 {test_items_text}
 
 Return your analysis as JSON (do NOT include markdown code fences):
 {{
   "semantic_diff": "Describe behavioral differences between old and new code. \
 If identical, say so.",
-  "test_purpose": "What these characterization tests verify.",
-  "result_analysis": "Commentary on the test results. \
-If there are failures, explain likely causes.",
-  "failures_ignorable": true or false,
-  "ignorable_reason": "If failures_ignorable is true, explain why. \
-Otherwise null.",
   "risk_warnings": [
     {{
       "description": "A specific risk or behavioral change",
       "severity": "low|medium|high|critical",
       "tested_by_golden": true or false
     }}
+  ],
+  "test_item_reviews": [
+    {{
+      "test_name": "exact test function name from the list above",
+      "test_purpose": "What this specific test verifies",
+      "result_analysis": "Why this test passed/failed/errored",
+      "failures_ignorable": true or false,
+      "ignorable_reason": "If failures_ignorable is true, explain why. \
+Otherwise null."
+    }}
   ]
 }}
+
+IMPORTANT: You MUST include a review for EVERY test item listed above.
 """
 
 
@@ -156,7 +164,7 @@ class ReviewGenerator:
                 if isinstance(gr.output, dict):
                     golden_output.update(gr.output)
 
-        # 組裝 test results
+        # 組裝 test results（含 failure_reason）
         total = passed = failed = errored = 0
         exit_code = None
         test_items_text = "No test results available."
@@ -169,7 +177,10 @@ class ReviewGenerator:
             if rec.test_result.test_items:
                 lines = []
                 for item in rec.test_result.test_items:
-                    lines.append(f"  - {item.test_name}: {item.status.value}")
+                    line = f"  - {item.test_name}: {item.status.value}"
+                    if item.failure_reason:
+                        line += f" ({item.failure_reason})"
+                    lines.append(line)
                 test_items_text = "\n".join(lines)
 
         prompt = REVIEW_PROMPT_TEMPLATE.format(
@@ -209,7 +220,16 @@ class ReviewGenerator:
             for w in m.risk_warnings
             if w.severity in (RiskSeverity.HIGH, RiskSeverity.CRITICAL)
         )
-        all_ignorable = all(m.failures_ignorable for m in modules)
+        # 從 per-test-item reviews 判斷是否所有失敗都可忽略
+        all_ignorable = all(
+            all(
+                tr.failures_ignorable
+                for tr in m.test_item_reviews
+                if tr.failures_ignorable is not None
+            )
+            or not m.test_item_reviews
+            for m in modules
+        )
 
         if high_risks == 0 and all_ignorable:
             return (
@@ -267,11 +287,10 @@ class ReviewGenerator:
                 before_files=before_files,
                 after_files=after_files,
                 semantic_diff=data.get("semantic_diff", ""),
-                test_purpose=data.get("test_purpose", ""),
-                result_analysis=data.get("result_analysis", ""),
-                failures_ignorable=bool(data.get("failures_ignorable", False)),
-                ignorable_reason=data.get("ignorable_reason"),
                 risk_warnings=self._parse_warnings(data.get("risk_warnings", [])),
+                test_item_reviews=self._parse_test_item_reviews(
+                    data.get("test_item_reviews", [])
+                ),
             )
         except (json.JSONDecodeError, Exception) as exc:
             logger.warning("Failed to parse review for %s: %s", before_files, exc)
@@ -279,7 +298,6 @@ class ReviewGenerator:
                 before_files=before_files,
                 after_files=after_files,
                 semantic_diff="[LLM parse failure]",
-                result_analysis=str(exc),
             )
 
     def _parse_warnings(self, raw: list[dict]) -> list[RiskWarning]:
@@ -306,3 +324,32 @@ class ReviewGenerator:
                 )
             )
         return warnings
+
+    def _parse_test_item_reviews(self, raw: list[dict]) -> list[TestItemReview]:
+        """解析 test_item_reviews 清單。
+
+        Args:
+            raw: LLM 回傳的 raw dict list。
+
+        Returns:
+            TestItemReview 清單。
+        """
+        reviews: list[TestItemReview] = []
+        if not isinstance(raw, list):
+            return reviews
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            test_name = item.get("test_name", "")
+            if not test_name:
+                continue
+            reviews.append(
+                TestItemReview(
+                    test_name=test_name,
+                    test_purpose=item.get("test_purpose", ""),
+                    result_analysis=item.get("result_analysis", ""),
+                    failures_ignorable=bool(item.get("failures_ignorable", False)),
+                    ignorable_reason=item.get("ignorable_reason"),
+                )
+            )
+        return reviews

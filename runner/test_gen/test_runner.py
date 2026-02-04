@@ -34,6 +34,7 @@ class ModuleTestRunner:
     test_dir: Path
     logs_dir: Path
     timeout_sec: int = 60
+    source_dirs: list[str] | None = None
 
     def run(
         self,
@@ -61,6 +62,7 @@ class ModuleTestRunner:
             test_file_path=test_file_path,
             work_dir=self.work_dir,
             timeout=self.timeout_sec,
+            source_dirs=self.source_dirs,
         )
 
         # 寫入 log
@@ -74,7 +76,8 @@ class ModuleTestRunner:
         )
 
         # 先從完整 stdout 解析個別 test item（需要在截斷前）
-        test_items = _parse_pytest_verbose_items(run_result.stdout)
+        failure_reasons = _parse_failure_reasons(run_result.stdout)
+        test_items = _parse_pytest_verbose_items(run_result.stdout, failure_reasons)
 
         # 解析 passed/failed/errored from stdout
         passed, failed, errored = _parse_test_summary(run_result.stdout)
@@ -99,7 +102,7 @@ class ModuleTestRunner:
 
 
 _VERBOSE_RE = re.compile(
-    r"^(\S+::(\S+))\s+(PASSED|FAILED|ERROR|SKIPPED)",
+    r"^(\S*::(\S+))\s+(PASSED|FAILED|ERROR|SKIPPED)",
     re.MULTILINE,
 )
 
@@ -111,17 +114,23 @@ _STATUS_MAP: dict[str, TestItemStatus] = {
 }
 
 
-def _parse_pytest_verbose_items(stdout: str) -> list[TestItemResult]:
+def _parse_pytest_verbose_items(
+    stdout: str,
+    failure_reasons: dict[str, str] | None = None,
+) -> list[TestItemResult]:
     """從 pytest -v 輸出解析個別 test function 的結果。
 
     匹配格式如 ``test_file.py::test_name PASSED``。
 
     Args:
         stdout: pytest 標準輸出。
+        failure_reasons: test_name → 錯誤訊息的 mapping。
 
     Returns:
         TestItemResult 清單。
     """
+    if failure_reasons is None:
+        failure_reasons = {}
     items: list[TestItemResult] = []
     for match in _VERBOSE_RE.finditer(stdout):
         test_name = match.group(2)  # 只取函式名
@@ -130,9 +139,57 @@ def _parse_pytest_verbose_items(stdout: str) -> list[TestItemResult]:
             TestItemResult(
                 test_name=test_name,
                 status=_STATUS_MAP[status_str],
+                failure_reason=failure_reasons.get(test_name),
             )
         )
     return items
+
+
+_FAILURE_REASON_RE = re.compile(
+    r"^(?:FAILED|ERROR)\s+\S*::(\S+)\s+-\s+(.+)$",
+    re.MULTILINE,
+)
+
+_ERROR_SECTION_RE = re.compile(
+    r"_{2,}\s+ERROR at (?:setup|teardown) of (\S+)\s+_{2,}\n"
+    r"(.*?)(?=\n_{2,}|\n={2,})",
+    re.DOTALL,
+)
+
+_ERROR_LINE_RE = re.compile(r"^E\s+(.+)$", re.MULTILINE)
+
+
+def _parse_failure_reasons(stdout: str) -> dict[str, str]:
+    """從 pytest 輸出解析失敗與錯誤原因。
+
+    優先從 short test summary（``FAILED path::test - reason``）解析，
+    再從 ERRORS section（setup/teardown errors）補充缺漏。
+
+    Args:
+        stdout: pytest 標準輸出。
+
+    Returns:
+        {test_name: error_message} mapping。
+    """
+    reasons: dict[str, str] = {}
+
+    # 1) short test summary: FAILED/ERROR path::test_name - reason
+    for match in _FAILURE_REASON_RE.finditer(stdout):
+        test_name = match.group(1)
+        reason = match.group(2).strip()
+        reasons[test_name] = reason
+
+    # 2) ERRORS section: setup/teardown errors（補充 short summary 沒有的）
+    for match in _ERROR_SECTION_RE.finditer(stdout):
+        test_name = match.group(1)
+        if test_name in reasons:
+            continue
+        block = match.group(2)
+        e_lines = _ERROR_LINE_RE.findall(block)
+        if e_lines:
+            reasons[test_name] = e_lines[-1].strip()
+
+    return reasons
 
 
 def _parse_test_summary(stdout: str) -> tuple[int, int, int]:

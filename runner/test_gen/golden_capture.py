@@ -79,12 +79,16 @@ class ModuleGoldenCapture:
         script_path = self.logs_dir / f"{safe_name}_script.py"
         script_path.write_text(script, encoding="utf-8")
 
+        # 計算 source_dirs
+        source_dirs = list({str(Path(sf.path).parent) for sf in before_files})
+
         # 執行並收集結果
         start = time.monotonic()
         run_result = plugin.run_with_coverage(
             script_path=script_path,
             work_dir=self.repo_dir,
             timeout=self.timeout_sec,
+            source_dirs=source_dirs,
         )
         duration_ms = int((time.monotonic() - start) * 1000)
 

@@ -42,13 +42,10 @@ Testing guidance:
 - Nondeterminism notes: {nondeterminism_notes}
 
 Requirements:
-- IMPORTANT: The file's parent directory is NOT a Python package (no __init__.py).
-  You MUST add the file's directory to sys.path before importing. Example:
-  ```
-  import sys
-  sys.path.insert(0, '/path/to/dir')
-  from module_name import SomeClass
-  ```
+- The source module directories are already on PYTHONPATH. You can import
+  source modules directly by their module name without any sys.path manipulation.
+  Example: `from sensor import Sensor` or `from tire_pressure_monitoring import Alarm`.
+  Do NOT use sys.path.insert(), os.path manipulation, or __file__-relative paths.
 - The script must be self-contained and runnable with `python script.py`
 - Use `from unittest.mock import patch` if mocking is needed
 - For class methods, instantiate the class first
@@ -82,17 +79,18 @@ Golden output (expected behavior from the original code):
 Requirements:
 1. For each golden output key, find the corresponding function/class in the new code
    and assert it produces the same value
-2. IMPORTANT: Add the source directory to sys.path before importing:
-   ```
-   import sys
-   sys.path.insert(0, '/path/to/dir')
-   ```
+2. The source module directories are already on PYTHONPATH. You can import
+   source modules directly by their module name without any sys.path manipulation.
+   Example: `from sensor import Sensor` or `from tire_pressure_monitoring import Alarm`.
+   Do NOT use sys.path.insert(), os.path manipulation, or __file__-relative paths.
 3. Use pytest assertions (assert actual == expected)
-4. Mock any side effects (file I/O, network, DB) as indicated in guidance
-5. If a golden key has no corresponding function in the new code, skip it with
+4. For mocking, use `from unittest.mock import patch, MagicMock` (stdlib).
+   Do NOT use the `mocker` fixture or `pytest-mock` — it is not installed.
+5. Mock any side effects (file I/O, network, DB) as indicated in guidance
+6. If a golden key has no corresponding function in the new code, skip it with
    a comment explaining why
-6. Do NOT include markdown code fences, return raw Python code only
-7. The test file must be self-contained and runnable with `pytest test_file.py`
+7. Do NOT include markdown code fences, return raw Python code only
+8. The test file must be self-contained and runnable with `pytest test_file.py`
 """
 
 
@@ -131,20 +129,13 @@ class PythonPlugin(LanguagePlugin):
         script_path: Path,
         work_dir: Path,
         timeout: int,
+        source_dirs: list[str] | None = None,
     ) -> TestRunResult:
         """用 coverage run 執行腳本。"""
         cov_data = script_path.with_suffix(".coverage")
 
-        # 設定 PYTHONPATH 包含 work_dir 和 work_dir/Python
         env = os.environ.copy()
-        python_subdir = work_dir / "Python"
-        pythonpath_parts = [str(work_dir)]
-        if python_subdir.is_dir():
-            pythonpath_parts.insert(0, str(python_subdir))
-        existing = env.get("PYTHONPATH", "")
-        if existing:
-            pythonpath_parts.append(existing)
-        env["PYTHONPATH"] = ":".join(pythonpath_parts)
+        env["PYTHONPATH"] = _build_pythonpath(work_dir, source_dirs)
 
         try:
             result = subprocess.run(
@@ -202,8 +193,12 @@ class PythonPlugin(LanguagePlugin):
         test_file_path: Path,
         work_dir: Path,
         timeout: int,
+        source_dirs: list[str] | None = None,
     ) -> TestRunResult:
         """用 pytest + coverage 執行 test file。"""
+        # 寫入 conftest.py 確保 source_dirs 在 sys.path 最前面
+        _write_conftest(test_file_path.parent, work_dir, source_dirs)
+
         cmd = [
             "python",
             "-m",
@@ -220,16 +215,7 @@ class PythonPlugin(LanguagePlugin):
         ]
 
         env = os.environ.copy()
-        # 把 work_dir 和 work_dir/Python 加到 PYTHONPATH
-        # Python/ 子目錄是這個 repo 的語言目錄結構
-        python_subdir = work_dir / "Python"
-        pythonpath_parts = [str(work_dir)]
-        if python_subdir.is_dir():
-            pythonpath_parts.insert(0, str(python_subdir))
-        existing = env.get("PYTHONPATH", "")
-        if existing:
-            pythonpath_parts.append(existing)
-        env["PYTHONPATH"] = ":".join(pythonpath_parts)
+        env["PYTHONPATH"] = _build_pythonpath(work_dir, source_dirs)
 
         try:
             result = subprocess.run(
@@ -288,6 +274,83 @@ class PythonPlugin(LanguagePlugin):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _write_conftest(
+    test_dir: Path,
+    work_dir: Path,
+    source_dirs: list[str] | None,
+) -> None:
+    """在測試目錄寫入 conftest.py，將 source_dirs 插入 sys.path 最前面。
+
+    PYTHONPATH 優先順序低於 sys.path[0]（cwd），因此需要透過
+    conftest.py 在 pytest import collection 前就把正確路徑插到最前面。
+
+    Args:
+        test_dir: 測試檔案所在目錄。
+        work_dir: repo 根目錄。
+        source_dirs: 原始碼目錄相對路徑。
+    """
+    if not source_dirs:
+        return
+
+    abs_dirs = []
+    seen: set[str] = set()
+    for d in source_dirs:
+        abs_dir = str(work_dir / d)
+        if abs_dir not in seen:
+            seen.add(abs_dir)
+            abs_dirs.append(abs_dir)
+
+    if not abs_dirs:
+        return
+
+    paths_str = ", ".join(repr(d) for d in abs_dirs)
+    conftest_path = test_dir / "conftest.py"
+    conftest_path.write_text(
+        f"import sys\nsys.path[:0] = [{paths_str}]\n",
+        encoding="utf-8",
+    )
+
+
+def _build_pythonpath(
+    work_dir: Path,
+    source_dirs: list[str] | None = None,
+) -> str:
+    """建構 PYTHONPATH，包含 work_dir、source_dirs、既有 PYTHONPATH。
+
+    Args:
+        work_dir: repo 根目錄。
+        source_dirs: 原始碼目錄相對路徑（如 ``Python/TirePressureMonitoringSystem``）。
+
+    Returns:
+        合併後的 PYTHONPATH 字串。
+    """
+    parts: list[str] = []
+
+    # 1) source_dirs（最高優先）
+    if source_dirs:
+        seen: set[str] = set()
+        for d in source_dirs:
+            abs_dir = str(work_dir / d)
+            if abs_dir not in seen:
+                seen.add(abs_dir)
+                parts.append(abs_dir)
+
+    # 2) work_dir/Python（如果存在）
+    python_subdir = work_dir / "Python"
+    if python_subdir.is_dir():
+        parts.append(str(python_subdir))
+
+    # 3) work_dir
+    parts.append(str(work_dir))
+
+    # 4) 既有 PYTHONPATH
+    existing = os.environ.get("PYTHONPATH", "")
+    if existing:
+        parts.append(existing)
+
+    return ":".join(parts)
 
 
 def _guidance_field(guidance: dict[str, Any] | None, key: str) -> str:

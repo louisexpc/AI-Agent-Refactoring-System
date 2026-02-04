@@ -67,6 +67,7 @@ class LanguagePlugin(ABC):
         script_path: Path,
         work_dir: Path,
         timeout: int,
+        source_dirs: list[str] | None = None,
     ) -> TestRunResult:
         """執行腳本並收集 coverage。
 
@@ -74,6 +75,7 @@ class LanguagePlugin(ABC):
             script_path: 腳本檔案路徑。
             work_dir: 工作目錄（通常是 repo root）。
             timeout: 超時秒數。
+            source_dirs: 原始碼目錄相對路徑，會加到 PYTHONPATH。
 
         Returns:
             TestRunResult。
@@ -109,6 +111,7 @@ class LanguagePlugin(ABC):
         test_file_path: Path,
         work_dir: Path,
         timeout: int,
+        source_dirs: list[str] | None = None,
     ) -> TestRunResult:
         """執行 test file 並收集結果。
 
@@ -116,6 +119,7 @@ class LanguagePlugin(ABC):
             test_file_path: test file 路徑。
             work_dir: 工作目錄。
             timeout: 超時秒數。
+            source_dirs: 原始碼目錄相對路徑，會加到 PYTHONPATH。
 
         Returns:
             TestRunResult。

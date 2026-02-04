@@ -163,7 +163,8 @@ def main() -> None:
             )
             if tr.test_items:
                 for item in tr.test_items:
-                    print(f"    - {item.test_name}: {item.status.value}")
+                    reason = f" ({item.failure_reason})" if item.failure_reason else ""
+                    print(f"    - {item.test_name}: {item.status.value}{reason}")
         else:
             print("  Test: NOT RUN")
 

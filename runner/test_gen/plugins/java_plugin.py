@@ -30,6 +30,7 @@ class JavaPlugin(LanguagePlugin):
         script_path: Path,
         work_dir: Path,
         timeout: int,
+        source_dirs: list[str] | None = None,
     ) -> TestRunResult:
         raise NotImplementedError("Java plugin not yet implemented")
 
@@ -49,6 +50,7 @@ class JavaPlugin(LanguagePlugin):
         test_file_path: Path,
         work_dir: Path,
         timeout: int,
+        source_dirs: list[str] | None = None,
     ) -> TestRunResult:
         raise NotImplementedError("Java plugin not yet implemented")
 
