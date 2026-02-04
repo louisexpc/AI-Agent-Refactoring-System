@@ -1,0 +1,21 @@
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/agent/Dockerfile
+    image: refactor-orchestrator:latest
+    volumes:
+      # Allow orchestrator to create sandbox containers (Docker-outside-of-Docker)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Host workspace for repos/artifacts/logs
+      - ./workspace:/workspace
+    environment:
+      PYTHONUNBUFFERED: "1"
+    restart: unless-stopped
+
+  sandbox_base:
+    build:
+      context: .
+      dockerfile: docker/sandbox/Dockerfile
+    image: refactor-sandbox:latest
+    profiles: ["manual"]
