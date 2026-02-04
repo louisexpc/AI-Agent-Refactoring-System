@@ -316,29 +316,47 @@ artifacts/<run_id>/
   "run_id": "test_result",
   "modules": [
     {
-      "before_files": ["Python/TirePressureMonitoringSystem/sensor.py",
-                       "Python/TirePressureMonitoringSystem/tire_pressure_monitoring.py"],
-      "after_files": ["Python/TirePressureMonitoringSystem/sensor.py",
-                      "Python/TirePressureMonitoringSystem/tire_pressure_monitoring.py"],
+      "before_files": [
+        "Python/TirePressureMonitoringSystem/sensor.py",
+        "Python/TirePressureMonitoringSystem/tire_pressure_monitoring.py"
+      ],
+      "after_files": [
+        "Python/TirePressureMonitoringSystem/sensor.py",
+        "Python/TirePressureMonitoringSystem/tire_pressure_monitoring.py"
+      ],
       "golden_output": {
-        "Sensor_sample_pressure_representative_call": 0.0959,
+        "Sensor_sample_pressure_representative_call": 0.09595528283426229,
+        "Sensor_pop_next_pressure_psi_value_with_mocked_sample": 20.5,
         "Alarm_is_alarm_on_initial_state": false,
         "Alarm_check_is_alarm_on_with_low_pressure": true
       },
       "golden_exit_code": 0,
       "golden_coverage_pct": 100.0,
-      "tested_functions": ["Sensor_sample_pressure_representative_call", "..."],
+      "tested_functions": [
+        "Sensor_sample_pressure_representative_call",
+        "Sensor_pop_next_pressure_psi_value_with_mocked_sample",
+        "Alarm_is_alarm_on_initial_state",
+        "..."
+      ],
       "test_file_path": "tests/test_sensor.py",
       "golden_script_path": "golden/Python_TirePressureMonitoringSystem_sensor_py_module_script.py",
       "test_items": [
-        {"test_name": "test_sensor_sample_pressure", "status": "passed", "failure_reason": null},
-        {"test_name": "test_alarm_check_low", "status": "failed", "failure_reason": "AttributeError: Mock..."}
+        {
+          "test_name": "test_sensor_sample_pressure_representative_call",
+          "status": "passed",
+          "failure_reason": null
+        },
+        {
+          "test_name": "test_alarm_check_scenarios[16.9-Alarm_check_is_alarm_on_with_low_pressure]",
+          "status": "passed",
+          "failure_reason": null
+        }
       ],
-      "aggregate_passed": 8,
-      "aggregate_failed": 1,
+      "aggregate_passed": 9,
+      "aggregate_failed": 0,
       "aggregate_errored": 0,
       "coverage_pct": 80.0,
-      "test_exit_code": 1
+      "test_exit_code": 0
     }
   ]
 }
@@ -357,9 +375,9 @@ artifacts/<run_id>/
 | `test_file_path` | string | 生成的測試檔相對路徑 |
 | `golden_script_path` | string | Golden capture 腳本相對路徑 |
 | `test_items` | array | 個別 test function 的結果（從 pytest -v 解析） |
-| `test_items[].test_name` | string | 測試函式名稱 |
+| `test_items[].test_name` | string | 測試函式名稱（含 parametrize 參數，如 `test_alarm_check_scenarios[16.9-...]`） |
 | `test_items[].status` | string | passed / failed / error / skipped |
-| `test_items[].failure_reason` | string\|null | 失敗時的錯誤訊息（passed 時為 null） |
+| `test_items[].failure_reason` | string\|null | 失敗/錯誤時的原因（passed 時為 null） |
 | `aggregate_passed` | int | 通過數 |
 | `aggregate_failed` | int | 失敗數 |
 | `aggregate_errored` | int | 錯誤數 |
@@ -377,37 +395,51 @@ LLM 比對新舊程式碼 + 測試結果，產出兩個層級的分析：
   "run_id": "test_result",
   "modules": [
     {
-      "before_files": ["Python/TirePressureMonitoringSystem/sensor.py",
-                       "Python/TirePressureMonitoringSystem/tire_pressure_monitoring.py"],
-      "after_files": ["Python/TirePressureMonitoringSystem/sensor.py",
-                      "Python/TirePressureMonitoringSystem/tire_pressure_monitoring.py"],
-      "semantic_diff": "The new code is identical to the old code.",
+      "before_files": [
+        "Python/TirePressureMonitoringSystem/sensor.py",
+        "Python/TirePressureMonitoringSystem/tire_pressure_monitoring.py"
+      ],
+      "after_files": [
+        "Python/TirePressureMonitoringSystem/sensor.py",
+        "Python/TirePressureMonitoringSystem/tire_pressure_monitoring.py"
+      ],
+      "semantic_diff": "The new code is semantically and syntactically identical to the old code. No refactoring has been performed; both files are verbatim copies. Consequently, there are no behavioral differences.",
       "risk_warnings": [
         {
-          "description": "The Alarm class has a hard-coded dependency on Sensor",
+          "description": "The primary risk is that no refactoring was performed, despite this being a refactoring-focused review. The submission may be incorrect. The following risks inherent in the original code remain unaddressed.",
+          "severity": "critical",
+          "tested_by_golden": false
+        },
+        {
+          "description": "The Alarm class has a hard-coded dependency on the Sensor class (Alarm.__init__ directly calls Sensor()). This tight coupling makes the class difficult to test and extend without monkey-patching. A better design would use dependency injection.",
           "severity": "medium",
           "tested_by_golden": false
+        },
+        {
+          "description": "The alarm state is write-once; once turned on, it can never be turned off. This 'latching' behavior may be intended, but it's a significant design choice that is not immediately obvious and could lead to bugs if a reset mechanism is ever needed.",
+          "severity": "low",
+          "tested_by_golden": true
         }
       ],
       "test_item_reviews": [
         {
-          "test_name": "test_alarm_is_alarm_on_initial_state",
-          "test_purpose": "Checks that a new Alarm has is_alarm_on initialized to False",
-          "result_analysis": "Passed. The Alarm.__init__ is unchanged.",
+          "test_name": "test_sensor_pop_next_pressure_psi_value_with_mocked_sample",
+          "test_purpose": "Tests the logic of pop_next_pressure_psi_value, specifically that it adds the _OFFSET value (16) to the result of sample_pressure. The test mocks sample_pressure to return a deterministic value (4.5) to check the arithmetic (16 + 4.5 = 20.5).",
+          "result_analysis": "Passed. The method's logic and the _OFFSET constant are unchanged. The new code correctly performs the same calculation as the old code.",
           "failures_ignorable": false,
           "ignorable_reason": null
         },
         {
-          "test_name": "test_alarm_check_scenarios[16.9-low_pressure]",
-          "test_purpose": "Verifies alarm triggers for pressure below threshold",
-          "result_analysis": "Failed due to mock setup error, not a real regression.",
-          "failures_ignorable": true,
-          "ignorable_reason": "Mock setup error, not a business logic issue"
+          "test_name": "test_alarm_check_scenarios[16.9-Alarm_check_is_alarm_on_with_low_pressure]",
+          "test_purpose": "Verifies that the alarm turns on when the pressure reading is below the low threshold (17). The test simulates a pressure of 16.9.",
+          "result_analysis": "Passed. The check psi_pressure_value < self._low_pressure_threshold is unchanged. Since 16.9 is less than 17, the alarm correctly transitions to 'on'.",
+          "failures_ignorable": false,
+          "ignorable_reason": null
         }
       ]
     }
   ],
-  "overall_assessment": "Reviewed 1 module(s). No high-severity risks detected."
+  "overall_assessment": "Reviewed 1 module(s). Found 1 high/critical risk warning(s). Manual review recommended for flagged items."
 }
 ```
 
@@ -426,7 +458,7 @@ LLM 比對新舊程式碼 + 測試結果，產出兩個層級的分析：
 | 欄位 | 型別 | 說明 |
 |------|------|------|
 | `test_item_reviews` | array | 每個 test function 的 LLM 點評 |
-| `test_item_reviews[].test_name` | string | 測試函式名稱 |
+| `test_item_reviews[].test_name` | string | 測試函式名稱（與 test_records 的 test_items 對應） |
 | `test_item_reviews[].test_purpose` | string | 該測試驗證什麼 |
 | `test_item_reviews[].result_analysis` | string | 通過/失敗原因分析 |
 | `test_item_reviews[].failures_ignorable` | bool | 失敗是否可忽略（預判性，不是當前狀態） |
@@ -451,7 +483,7 @@ Golden output 的 key 是 LLM 決定的描述性命名，代表「測試什麼 +
 
 ```json
 {
-  "Sensor_sample_pressure_representative_call": 0.0959,
+  "Sensor_sample_pressure_representative_call": 0.09595528283426229,
   "Sensor_pop_next_pressure_psi_value_with_mocked_sample": 20.5,
   "Alarm_is_alarm_on_initial_state": false,
   "Alarm_check_is_alarm_on_with_low_pressure": true,
