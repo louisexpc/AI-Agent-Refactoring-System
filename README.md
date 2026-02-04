@@ -154,7 +154,7 @@ dep_graph.edges:  sensor.py → random (stdlib, 跳過)
        def sample_pressure() -> float: ..."
 ```
 
-注意：dep_graph 本身只提供依賴 **edges**（哪個檔案 import 哪個檔案）。`dep_resolver.py` 根據這些 edges 讀取依賴檔案，再用 AST 只提取 **signatures**（class/function 簽名，不含 body），避免 context 過長。
+dep_graph 本身只提供依賴 **edges**（哪個檔案 import 哪個檔案）。`dep_resolver.py` 根據這些 edges 讀取依賴檔案，再用 AST 只提取 **signatures**（class/function 簽名，不含 body），避免 context 過長。
 
 ### Module Mapping 的作用
 
@@ -511,10 +511,9 @@ Golden output 的 key 是 LLM 決定的描述性命名，代表「測試什麼 +
 
 #### 未來改進項目
 
-- [ ] 儲存 Guidance 到檔案供 debug
 - [ ] 報告中標示「無法對應的 golden keys」
 - [ ] 支援 key mapping 設定檔（手動指定對應關係）
-- [ ] 用 AST 提取 function signature 輔助對應
+- [ ] dep_resolver 支援非 Python 語言的 signature 提取（目前非 Python 僅 fallback 截取前 200 行原始碼，可用 tree-sitter 實作 Go/Java 的 AST 解析）
 
 ---
 
