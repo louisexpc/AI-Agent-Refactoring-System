@@ -262,10 +262,13 @@ artifacts/<run_id>/
 ├── test_records.json         # 事實：golden output + 每個 test item 狀態 + failure_reason
 ├── review.json               # LLM 分析：semantic diff + risk warnings + per-test-item 點評
 ├── golden/                   # Golden capture 產物
+│   ├── guidance.json         # Phase 1 LLM 產出：side_effects, mock_recommendations, nondeterminism_notes
+│   ├── dep_signatures_before.json  # Before files 的依賴 signatures (AST 提取)
 │   ├── *_script.py           # LLM 生成的呼叫腳本
 │   ├── *.coverage            # Coverage 資料
 │   └── *.log                 # 執行日誌
 └── tests/                    # 生成的測試檔案
+    ├── dep_signatures_after.json   # After files 的依賴 signatures (AST 提取)
     ├── conftest.py           # 自動生成的 sys.path 注入
     ├── test_*.py             # Pytest 測試檔
     └── *.log                 # 測試執行日誌

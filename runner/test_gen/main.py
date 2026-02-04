@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from runner.test_gen.dep_resolver import resolve_dependency_context
 from runner.test_gen.golden_capture import ModuleGoldenCapture
 from runner.test_gen.guidance_gen import TestGuidanceGenerator
 from runner.test_gen.plugins import get_plugin
@@ -88,6 +89,23 @@ def run_characterization_test(
     )
     guidance = guidance_gen.build_for_module(old_sources)
 
+    # 寫出 guidance.json（debug 用）
+    guidance_path = golden_dir / "guidance.json"
+    guidance_path.write_text(
+        json.dumps(guidance.model_dump(), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    # 收集並寫出 before_files 的 dep_signatures（debug 用）
+    before_dep_sigs = {}
+    for sf in old_sources:
+        sig = resolve_dependency_context(dep_graph, sf.path, repo_dir)
+        before_dep_sigs[sf.path] = sig
+    before_dep_sigs_path = golden_dir / "dep_signatures_before.json"
+    before_dep_sigs_path.write_text(
+        json.dumps(before_dep_sigs, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
     # Phase 3: Golden Capture（用舊 code + 舊語言 plugin）
     capture = ModuleGoldenCapture(
         repo_dir=repo_dir,
@@ -124,6 +142,16 @@ def run_characterization_test(
     # 寫入 emitted 測試檔到 tests/
     emitted_path = tests_dir / Path(emitted.path).name
     emitted_path.write_text(emitted.content, encoding="utf-8")
+
+    # 收集並寫出 after_files 的 dep_signatures（debug 用）
+    after_dep_sigs = {}
+    for sf in new_sources:
+        sig = resolve_dependency_context(dep_graph, sf.path, refactored_repo_dir)
+        after_dep_sigs[sf.path] = sig
+    after_dep_sigs_path = tests_dir / "dep_signatures_after.json"
+    after_dep_sigs_path.write_text(
+        json.dumps(after_dep_sigs, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
     # 計算 source_dirs：from file paths 取 unique 的 parent directories
     source_dirs = list({str(Path(p).parent) for p in after_files})
