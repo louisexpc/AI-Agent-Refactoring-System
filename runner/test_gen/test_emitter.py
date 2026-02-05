@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ from shared.test_types import (
     SourceFile,
     TestGuidance,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -70,15 +73,17 @@ class ModuleTestEmitter:
             elif rec.output is not None:
                 golden_values[rec.file_path] = rec.output
 
-        # 用 plugin 生成 test file
+        # 用 plugin 生成 test file（帶 retry）
         guidance_dict = guidance.model_dump() if guidance else None
-        content = plugin.generate_test_file(
-            new_source_code=source_code,
+        content = self._generate_test_with_retry(
+            plugin=plugin,
+            source_code=source_code,
             module_paths=module_paths,
             golden_values=golden_values,
             dep_signatures=dep_signatures,
-            guidance=guidance_dict,
+            guidance_dict=guidance_dict,
             llm_client=llm_client,
+            max_retries=3,
         )
 
         test_path = self._derive_test_path(module_paths)
@@ -132,12 +137,91 @@ class ModuleTestEmitter:
         p = Path(module_paths[0])
         ext_map = {
             "python": ".py",
-            "go": "_test.go",
+            "go": ".go",
             "typescript": ".test.ts",
             "javascript": ".test.js",
         }
         ext = ext_map.get(self.target_language, ".py")
 
         if self.target_language == "go":
-            return str(p.with_suffix(ext))
+            # Go: leaderboard.go → leaderboard_test.go
+            return str(p.parent / f"{p.stem}_test{ext}")
         return str(p.parent / f"test_{p.stem}{ext}")
+
+    def _generate_test_with_retry(
+        self,
+        plugin: LanguagePlugin,
+        source_code: str,
+        module_paths: list[str],
+        golden_values: dict[str, Any],
+        dep_signatures: str,
+        guidance_dict: dict[str, Any] | None,
+        llm_client: Any,
+        max_retries: int = 3,
+    ) -> str:
+        """生成 test file，如果編譯失敗則 retry。
+
+        Args:
+            plugin: 語言插件。
+            source_code: 原始碼。
+            module_paths: 模組路徑。
+            golden_values: Golden values。
+            dep_signatures: 依賴 signatures。
+            guidance_dict: 測試指引。
+            llm_client: LLM 客戶端。
+            max_retries: 最大重試次數。
+
+        Returns:
+            生成的 test content。
+        """
+        error_feedback = None
+
+        for attempt in range(max_retries):
+            if attempt > 0:
+                logger.info(
+                    f"Retry test generation, attempt {attempt + 1}/{max_retries}"
+                )
+
+            # 如果是 retry，在 guidance 中加入錯誤訊息
+            if error_feedback and guidance_dict:
+                guidance_dict["compilation_error"] = error_feedback
+            elif error_feedback:
+                guidance_dict = {"compilation_error": error_feedback}
+
+            # 生成 test
+            content = plugin.generate_test_file(
+                new_source_code=source_code,
+                module_paths=module_paths,
+                golden_values=golden_values,
+                dep_signatures=dep_signatures,
+                guidance=guidance_dict,
+                llm_client=llm_client,
+            )
+
+            # 快速語法檢查（使用 plugin 的方法）
+            compile_ok, error_msg = plugin.check_test_syntax(content)
+
+            if compile_ok:
+                if attempt > 0:
+                    logger.info(f"Test generation succeeded on attempt {attempt + 1}")
+                return content
+
+            # 編譯失敗，準備 retry
+            error_feedback = (
+                "Previous test had syntax/compile errors:\n"
+                f"{error_msg}\n"
+                "Please fix these errors and regenerate."
+            )
+            short_error = error_msg[:200]
+            logger.warning(
+                "Test compilation failed on attempt %d: %s",
+                attempt + 1,
+                short_error,
+            )
+
+        # 所有 retry 都失敗，返回最後一次生成的 test
+        logger.error(
+            "Test generation failed after %d attempts, using last generated test",
+            max_retries,
+        )
+        return content

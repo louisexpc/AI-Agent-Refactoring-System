@@ -18,23 +18,24 @@ from pathlib import Path
 from typing import Any
 
 from runner.test_gen.plugins import LanguagePlugin, TestRunResult
+from runner.test_gen.system_prompts import (
+    SYSTEM_GOLDEN_SCRIPT,
+    SYSTEM_TEST_GENERATION,
+)
+from shared.test_types import TestItemResult, TestItemStatus
 
 # ---------------------------------------------------------------------------
-# Prompt Templates
+# User Prompt Templates (Task-specific)
 # ---------------------------------------------------------------------------
 
-GOLDEN_SCRIPT_PROMPT: str = """\
-You are a senior test engineer. Generate a standalone Python script that:
-1. Imports all public functions/classes from the source files
-2. Calls each public function with representative arguments
-3. Prints ALL return values as a single JSON object to stdout
+USER_GOLDEN_SCRIPT: str = """\
+Generate a standalone Python script that captures behavioral output.
 
 Source files in this module:
 {file_sections}
 
 Dependent source files (signatures of imported modules):
 {dependency_info}
-Use this context to understand the types, classes and functions available.
 
 Testing guidance:
 - Side effects: {side_effects}
@@ -58,9 +59,8 @@ Requirements:
 - Do NOT print anything else to stdout
 """
 
-CHARACTERIZATION_TEST_PROMPT: str = """\
-You are a senior test engineer. Generate a complete pytest test file
-that verifies the refactored code produces the same outputs as the original code.
+USER_TEST_GENERATION: str = """\
+Generate a complete pytest test file for behavioral validation.
 
 New source files (after refactoring):
 {file_sections}
@@ -113,7 +113,7 @@ class PythonPlugin(LanguagePlugin):
         """生成 Python golden capture 腳本。"""
         file_sections = self._build_file_sections(source_code, module_paths)
 
-        prompt = GOLDEN_SCRIPT_PROMPT.format(
+        prompt = USER_GOLDEN_SCRIPT.format(
             file_sections=file_sections,
             dependency_info=dep_signatures or "No internal dependencies.",
             side_effects=_guidance_field(guidance, "side_effects"),
@@ -121,7 +121,7 @@ class PythonPlugin(LanguagePlugin):
             nondeterminism_notes=_guidance_field(guidance, "nondeterminism_notes"),
         )
 
-        response = llm_client.generate(prompt)
+        response = llm_client.generate(prompt, system_override=SYSTEM_GOLDEN_SCRIPT)
         return _strip_code_fences(response)
 
     def run_with_coverage(
@@ -176,7 +176,7 @@ class PythonPlugin(LanguagePlugin):
         file_sections = self._build_file_sections(new_source_code, module_paths)
         golden_str = json.dumps(golden_values, indent=2, default=str)
 
-        prompt = CHARACTERIZATION_TEST_PROMPT.format(
+        prompt = USER_TEST_GENERATION.format(
             file_sections=file_sections,
             dependency_info=dep_signatures or "No internal dependencies.",
             side_effects=_guidance_field(guidance, "side_effects"),
@@ -185,7 +185,7 @@ class PythonPlugin(LanguagePlugin):
             golden_output=golden_str,
         )
 
-        response = llm_client.generate(prompt)
+        response = llm_client.generate(prompt, system_override=SYSTEM_TEST_GENERATION)
         return _strip_code_fences(response)
 
     def run_tests(
@@ -258,6 +258,90 @@ class PythonPlugin(LanguagePlugin):
             return False, "TIMEOUT"
         except Exception as exc:
             return False, str(exc)[:500]
+
+    def parse_test_output(
+        self,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+    ) -> tuple[int, int, int, list[TestItemResult]]:
+        """解析 pytest 測試輸出。"""
+        # 先從完整 stdout 解析個別 test item
+        failure_reasons = _parse_pytest_failure_reasons(stdout)
+        test_items = _parse_pytest_verbose_items(stdout, failure_reasons)
+
+        # 解析 passed/failed/errored from stdout
+        passed, failed, errored = _parse_pytest_summary(stdout)
+
+        return passed, failed, errored, test_items
+
+    def check_test_syntax(
+        self,
+        test_content: str,
+    ) -> tuple[bool, str]:
+        """檢查 Python 測試檔案的語法。
+
+        使用 compile() 進行語法檢查。
+
+        Args:
+            test_content: 測試檔案內容。
+
+        Returns:
+            (成功, 錯誤訊息) 元組。
+        """
+        try:
+            compile(test_content, "<test>", "exec")
+            return True, ""
+        except SyntaxError as e:
+            return False, f"SyntaxError at line {e.lineno}: {e.msg}"
+        except Exception as e:
+            return False, str(e)
+
+    def check_source_compilation(
+        self,
+        module_files: list[Path],
+        work_dir: Path,
+    ) -> tuple[bool, str]:
+        """檢查 Python 原始碼是否可編譯。
+
+        使用 python -m compileall 檢查語法錯誤。
+
+        Args:
+            module_files: 模組檔案路徑清單（絕對路徑）。
+            work_dir: 工作目錄（refactored repo root）。
+
+        Returns:
+            (success, error_output) 元組。
+        """
+        import subprocess
+
+        try:
+            if not module_files:
+                return False, "No module files provided"
+
+            # 使用 compileall 檢查所有檔案
+            # -q: quiet mode (只輸出錯誤)
+            # -f: force recompile
+            file_paths = [str(f) for f in module_files]
+
+            result = subprocess.run(
+                ["python", "-m", "compileall", "-q", "-f"] + file_paths,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(work_dir),
+            )
+
+            if result.returncode != 0:
+                error_msg = result.stderr or result.stdout
+                return False, error_msg
+
+            return True, ""
+
+        except subprocess.TimeoutExpired:
+            return False, "Compilation check timeout"
+        except Exception as e:
+            return False, f"Compilation check error: {str(e)}"
 
     def _build_file_sections(self, source_code: str, module_paths: list[str]) -> str:
         """將 source_code 包裝成帶路徑標記的區段。"""
@@ -420,3 +504,124 @@ def _parse_pytest_coverage(work_dir: Path, stdout: str) -> float | None:
         return float(match.group(1))
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Pytest Output Parsing Helpers
+# ---------------------------------------------------------------------------
+
+_VERBOSE_RE = re.compile(
+    r"^(\S*::(\S+))\s+(PASSED|FAILED|ERROR|SKIPPED)",
+    re.MULTILINE,
+)
+
+_STATUS_MAP: dict[str, TestItemStatus] = {
+    "PASSED": TestItemStatus.PASSED,
+    "FAILED": TestItemStatus.FAILED,
+    "ERROR": TestItemStatus.ERROR,
+    "SKIPPED": TestItemStatus.SKIPPED,
+}
+
+
+def _parse_pytest_verbose_items(
+    stdout: str,
+    failure_reasons: dict[str, str] | None = None,
+) -> list[TestItemResult]:
+    """從 pytest -v 輸出解析個別 test function 的結果。
+
+    匹配格式如 ``test_file.py::test_name PASSED``。
+
+    Args:
+        stdout: pytest 標準輸出。
+        failure_reasons: test_name → 錯誤訊息的 mapping。
+
+    Returns:
+        TestItemResult 清單。
+    """
+    if failure_reasons is None:
+        failure_reasons = {}
+    items: list[TestItemResult] = []
+    for match in _VERBOSE_RE.finditer(stdout):
+        test_name = match.group(2)  # 只取函式名
+        status_str = match.group(3)
+        items.append(
+            TestItemResult(
+                test_name=test_name,
+                status=_STATUS_MAP[status_str],
+                failure_reason=failure_reasons.get(test_name),
+            )
+        )
+    return items
+
+
+_FAILURE_REASON_RE = re.compile(
+    r"^(?:FAILED|ERROR)\s+\S*::(\S+)\s+-\s+(.+)$",
+    re.MULTILINE,
+)
+
+_ERROR_SECTION_RE = re.compile(
+    r"_{2,}\s+ERROR at (?:setup|teardown) of (\S+)\s+_{2,}\n"
+    r"(.*?)(?=\n_{2,}|\n={2,})",
+    re.DOTALL,
+)
+
+_ERROR_LINE_RE = re.compile(r"^E\s+(.+)$", re.MULTILINE)
+
+
+def _parse_pytest_failure_reasons(stdout: str) -> dict[str, str]:
+    """從 pytest 輸出解析失敗與錯誤原因。
+
+    優先從 short test summary（``FAILED path::test - reason``）解析，
+    再從 ERRORS section（setup/teardown errors）補充缺漏。
+
+    Args:
+        stdout: pytest 標準輸出。
+
+    Returns:
+        {test_name: error_message} mapping。
+    """
+    reasons: dict[str, str] = {}
+
+    # 1) short test summary: FAILED/ERROR path::test_name - reason
+    for match in _FAILURE_REASON_RE.finditer(stdout):
+        test_name = match.group(1)
+        reason = match.group(2).strip()
+        reasons[test_name] = reason
+
+    # 2) ERRORS section: setup/teardown errors（補充 short summary 沒有的）
+    for match in _ERROR_SECTION_RE.finditer(stdout):
+        test_name = match.group(1)
+        if test_name in reasons:
+            continue
+        block = match.group(2)
+        e_lines = _ERROR_LINE_RE.findall(block)
+        if e_lines:
+            reasons[test_name] = e_lines[-1].strip()
+
+    return reasons
+
+
+def _parse_pytest_summary(stdout: str) -> tuple[int, int, int]:
+    """從 pytest stdout 解析 passed/failed/error 數量。
+
+    Args:
+        stdout: 測試標準輸出。
+
+    Returns:
+        (passed, failed, errored) 元組。
+    """
+    passed = failed = errored = 0
+
+    match = re.search(r"(\d+) passed", stdout)
+    if match:
+        passed = int(match.group(1))
+
+    match = re.search(r"(\d+) failed", stdout)
+    if match:
+        failed = int(match.group(1))
+
+    match = re.search(r"(\d+) error", stdout)
+    if match:
+        errored = int(match.group(1))
+
+    return passed, failed, errored

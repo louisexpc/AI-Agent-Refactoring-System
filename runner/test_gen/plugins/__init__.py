@@ -13,7 +13,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+# Forward import for type hints
+if TYPE_CHECKING:
+    from shared.test_types import TestItemResult
 
 
 @dataclass
@@ -140,6 +144,131 @@ class LanguagePlugin(ABC):
         Returns:
             (success, output) 元組。
         """
+
+    @abstractmethod
+    def parse_test_output(
+        self,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+    ) -> tuple[int, int, int, list[TestItemResult]]:
+        """解析測試輸出，提取測試結果。
+
+        Args:
+            stdout: 測試標準輸出。
+            stderr: 測試標準錯誤。
+            exit_code: 測試結束碼。
+
+        Returns:
+            (passed, failed, errored, test_items) 元組。
+            test_items 是 TestItemResult 清單。
+        """
+
+    @abstractmethod
+    def check_test_syntax(
+        self,
+        test_content: str,
+    ) -> tuple[bool, str]:
+        """檢查測試檔案的語法/編譯錯誤（不執行測試）。
+
+        用於 retry 機制：在生成測試後快速檢查語法，
+        如果有錯誤則將錯誤訊息回饋給 LLM 重新生成。
+
+        Args:
+            test_content: 測試檔案內容。
+
+        Returns:
+            (成功, 錯誤訊息) 元組。
+            成功時錯誤訊息為空字串。
+        """
+
+    @abstractmethod
+    def check_source_compilation(
+        self,
+        module_files: list[Path],
+        work_dir: Path,
+    ) -> tuple[bool, str]:
+        """檢查原始碼是否可編譯。
+
+        在測試生成前先檢查原始碼本身是否有編譯問題。
+
+        Args:
+            module_files: 模組檔案路徑清單（絕對路徑）。
+            work_dir: 工作目錄（通常是 refactored repo root）。
+
+        Returns:
+            (success, error_output) 元組。
+            success=True 表示編譯成功，error_output 為空或警告。
+            success=False 表示編譯失敗，error_output 包含錯誤訊息。
+        """
+
+    def analyze_source_with_llm(
+        self,
+        error_output: str,
+        module_files: list[Path],
+        language: str,
+        llm_client: Any,
+    ) -> Any:
+        """使用 LLM 分析原始碼編譯錯誤（跨語言通用）。
+
+        Args:
+            error_output: 編譯器或語法檢查器的錯誤輸出。
+            module_files: 模組檔案路徑清單。
+            language: 語言名稱（python, go, java 等）。
+            llm_client: LLM 呼叫介面。
+
+        Returns:
+            SourceAnalysis 物件。
+        """
+        import json
+
+        from runner.test_gen.system_prompts import (
+            ANALYZE_SOURCE_TEMPLATE,
+            SYSTEM_SOURCE_ANALYZER,
+        )
+        from shared.test_types import SourceAnalysis, SourceIssue
+
+        # 準備檔案路徑列表
+        file_paths_str = ", ".join(str(f) for f in module_files)
+
+        # 建立 user prompt
+        user_prompt = ANALYZE_SOURCE_TEMPLATE.format(
+            language=language,
+            file_paths=file_paths_str,
+            error_output=error_output,
+        )
+
+        # 呼叫 LLM
+        try:
+            response_text = llm_client.generate(
+                prompt=user_prompt,
+                system_override=SYSTEM_SOURCE_ANALYZER,
+            )
+
+            # 解析 JSON 回應
+            issues_data = json.loads(response_text)
+
+            # 轉換為 SourceIssue 物件
+            issues = [SourceIssue(**issue_dict) for issue_dict in issues_data]
+
+            return SourceAnalysis(
+                compilable=False,
+                issues=issues,
+                auto_fixed=[],
+                error_output=error_output,
+            )
+
+        except Exception as e:
+            # LLM 呼叫失敗，回傳基本分析
+            return SourceAnalysis(
+                compilable=False,
+                issues=[],
+                auto_fixed=[],
+                error_output=(
+                    f"LLM analysis failed: {str(e)}\n\n"
+                    f"Original error:\n{error_output}"
+                ),
+            )
 
 
 _PLUGIN_REGISTRY: dict[str, type[LanguagePlugin]] = {}

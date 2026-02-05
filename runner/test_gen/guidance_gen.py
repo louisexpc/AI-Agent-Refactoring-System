@@ -13,14 +13,18 @@ from pathlib import Path
 from typing import Any
 
 from runner.test_gen.dep_resolver import resolve_dependency_context
+from runner.test_gen.system_prompts import SYSTEM_GUIDANCE
 from shared.ingestion_types import DepGraph
 from shared.test_types import SourceFile, TestGuidance, TestGuidanceIndex
 
 logger = logging.getLogger(__name__)
 
-GUIDANCE_PROMPT_TEMPLATE: str = """\
-You are a senior test engineer. Analyze the following source code
-and return testing guidance in JSON format.
+# ---------------------------------------------------------------------------
+# User Prompt Template (Task-specific)
+# ---------------------------------------------------------------------------
+
+USER_GUIDANCE_PROMPT: str = """\
+Analyze the following source code and return testing guidance in JSON format.
 
 File path: {module_path}
 
@@ -92,12 +96,12 @@ class TestGuidanceGenerator:
             dep_info = resolve_dependency_context(
                 self.dep_graph, sf.path, self.repo_dir
             )
-            prompt = GUIDANCE_PROMPT_TEMPLATE.format(
+            prompt = USER_GUIDANCE_PROMPT.format(
                 module_path=sf.path,
                 source_code=sf.read_content(self.repo_dir),
                 dependency_info=dep_info,
             )
-            response = self.llm_client.generate(prompt)
+            response = self.llm_client.generate(prompt, system_override=SYSTEM_GUIDANCE)
             guidance = self._parse_response(sf.path, response)
             guidances.append(guidance)
 
@@ -115,12 +119,12 @@ class TestGuidanceGenerator:
         dep_info = resolve_dependency_context(
             self.dep_graph, source_file.path, self.repo_dir
         )
-        prompt = GUIDANCE_PROMPT_TEMPLATE.format(
+        prompt = USER_GUIDANCE_PROMPT.format(
             module_path=source_file.path,
             source_code=source_file.read_content(self.repo_dir),
             dependency_info=dep_info,
         )
-        response = self.llm_client.generate(prompt)
+        response = self.llm_client.generate(prompt, system_override=SYSTEM_GUIDANCE)
         return self._parse_response(source_file.path, response)
 
     def build_for_module(self, source_files: list[SourceFile]) -> TestGuidance:
@@ -152,12 +156,12 @@ class TestGuidanceGenerator:
         combined_deps = "\n".join(all_dep_info) if all_dep_info else "None"
         module_path = ",".join(sf.path for sf in source_files)
 
-        prompt = GUIDANCE_PROMPT_TEMPLATE.format(
+        prompt = USER_GUIDANCE_PROMPT.format(
             module_path=module_path,
             source_code=combined_code,
             dependency_info=combined_deps,
         )
-        response = self.llm_client.generate(prompt)
+        response = self.llm_client.generate(prompt, system_override=SYSTEM_GUIDANCE)
         return self._parse_response(module_path, response)
 
     def _parse_response(self, module_path: str, response: str) -> TestGuidance:

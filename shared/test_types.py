@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json as _json
 from enum import Enum
 from typing import Any
 
@@ -75,14 +76,18 @@ class TestGuidance(BaseModel):
     )
     @classmethod
     def _coerce_none_to_list(cls, v: Any) -> list[str]:
-        """LLM 可能回傳 null 或字串，統一轉為 list。"""
+        """LLM 可能回傳 null、字串或 list[dict]，統一轉為 list[str]。"""
         if v is None:
             return []
         if isinstance(v, str):
-            # LLM 回傳 "null" 字串或一段描述文字
             if v.strip().lower() == "null":
                 return []
             return [v]
+        if isinstance(v, list):
+            return [
+                item if isinstance(item, str) else _json.dumps(item, ensure_ascii=False)
+                for item in v
+            ]
         return v
 
 
@@ -260,6 +265,7 @@ class CharacterizationRecord(BaseModel):
         tested_functions: LLM 決定測試的功能名稱（golden output keys）。
         golden_script_path: golden capture 腳本的相對路徑。
         emitted_test_path: 生成的 test file 的相對路徑。
+        source_analysis: 原始碼編譯分析結果（如果執行了檢查）。
     """
 
     module_mapping: ModuleMapping
@@ -270,6 +276,7 @@ class CharacterizationRecord(BaseModel):
     tested_functions: list[str] = Field(default_factory=list)
     golden_script_path: str | None = None
     emitted_test_path: str | None = None
+    source_analysis: SourceAnalysis | None = None
 
 
 class StageTestReport(BaseModel):
@@ -381,6 +388,50 @@ class TestRecords(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SourceIssueSeverity(str, Enum):
+    """原始碼問題嚴重程度。"""
+
+    SAFE_TO_FIX = "safe_to_fix"  # 可自動修復且不改變語意（例如 unused imports）
+    WARNING = "warning"  # 小問題，可能不影響執行
+    CRITICAL = "critical"  # 阻止編譯或執行的問題
+
+
+class SourceIssue(BaseModel):
+    """原始碼編譯或語法問題。
+
+    Attributes:
+        issue_type: 問題類型（unused_import, syntax_error, missing_dependency 等）。
+        severity: 嚴重程度。
+        description: 問題描述。
+        file_path: 發生問題的檔案路徑。
+        line_number: 行號（如果可解析）。
+        suggested_fix: 建議的修復方式（如果 severity 是 safe_to_fix）。
+    """
+
+    issue_type: str
+    severity: SourceIssueSeverity
+    description: str
+    file_path: str
+    line_number: int | None = None
+    suggested_fix: str | None = None
+
+
+class SourceAnalysis(BaseModel):
+    """原始碼分析結果。
+
+    Attributes:
+        compilable: 原始碼是否可編譯。
+        issues: 發現的問題清單。
+        auto_fixed: 已自動修復的問題清單。
+        error_output: 編譯器或語法檢查器的錯誤輸出。
+    """
+
+    compilable: bool
+    issues: list[SourceIssue] = Field(default_factory=list)
+    auto_fixed: list[SourceIssue] = Field(default_factory=list)
+    error_output: str | None = None
+
+
 class RiskSeverity(str, Enum):
     """風險嚴重程度。"""
 
@@ -431,6 +482,7 @@ class ModuleReview(BaseModel):
         semantic_diff: 新舊 code 的行為差異分析。
         risk_warnings: 風險清單。
         test_item_reviews: 每個 test function 的 LLM 點評。
+        source_analysis: 原始碼編譯分析結果（如果執行了檢查）。
     """
 
     before_files: list[str]
@@ -438,6 +490,18 @@ class ModuleReview(BaseModel):
     semantic_diff: str = ""
     risk_warnings: list[RiskWarning] = Field(default_factory=list)
     test_item_reviews: list[TestItemReview] = Field(default_factory=list)
+    source_analysis: SourceAnalysis | None = None
+
+    @field_validator("semantic_diff", mode="before")
+    @classmethod
+    def _coerce_semantic_diff(cls, v: Any) -> str:
+        """LLM 可能回傳 dict 而非 string，統一轉為 str。"""
+        if v is None:
+            return ""
+        if isinstance(v, dict):
+            # LLM 回傳了結構化物件，轉為 JSON 字串
+            return _json.dumps(v, ensure_ascii=False)
+        return str(v)
 
 
 class Review(BaseModel):

@@ -83,6 +83,40 @@ def run_characterization_test(
     old_sources = [SourceFile(path=p, lang=source_language) for p in before_files]
     new_sources = [SourceFile(path=p, lang=target_language) for p in after_files]
 
+    # Phase 1.5: 檢查原始碼編譯（新 code）
+    source_analysis = None
+    after_file_paths = [refactored_repo_dir / p for p in after_files]
+    logger.info("Checking source compilation for %s...", after_files)
+
+    success, error_output = new_plugin.check_source_compilation(
+        module_files=after_file_paths,
+        work_dir=refactored_repo_dir,
+    )
+
+    if not success:
+        logger.warning("Source compilation failed, analyzing with LLM...")
+        source_analysis = new_plugin.analyze_source_with_llm(
+            error_output=error_output,
+            module_files=after_file_paths,
+            language=target_language,
+            llm_client=llm_client,
+        )
+        logger.info("Found %d source issues", len(source_analysis.issues))
+
+        # 檢查是否有 safe_to_fix 的問題（未來可實作自動修復）
+        safe_fixes = [
+            issue
+            for issue in source_analysis.issues
+            if issue.severity.value == "safe_to_fix"
+        ]
+        if safe_fixes:
+            logger.info(
+                "Found %d safe-to-fix issues (not auto-fixing yet)",
+                len(safe_fixes),
+            )
+    else:
+        logger.info("Source compilation successful")
+
     # Phase 2: Guidance
     guidance_gen = TestGuidanceGenerator(
         llm_client=llm_client, repo_dir=repo_dir, dep_graph=dep_graph
@@ -124,6 +158,18 @@ def run_characterization_test(
     for gr in golden_records:
         if isinstance(gr.output, dict):
             tested_functions.extend(gr.output.keys())
+
+    # 防呆：golden output 為空時警告
+    golden_values_empty = all(
+        not isinstance(gr.output, dict) or not gr.output for gr in golden_records
+    )
+    if golden_values_empty:
+        logger.warning(
+            "Golden capture produced no usable output for %s. "
+            "Generated tests will lack golden anchoring and may not detect "
+            "behavioral differences between old and new code.",
+            before_files,
+        )
 
     # Phase 4: Test Emitter（用新 code + 新語言 plugin）
     emitter = ModuleTestEmitter(
@@ -184,6 +230,7 @@ def run_characterization_test(
         tested_functions=tested_functions,
         golden_script_path=golden_script_path,
         emitted_test_path=emitted_test_path,
+        source_analysis=source_analysis,
     )
 
 

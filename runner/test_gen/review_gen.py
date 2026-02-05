@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from runner.test_gen.system_prompts import SYSTEM_REVIEW
 from shared.test_types import (
     CharacterizationRecord,
     ModuleReview,
@@ -27,11 +28,10 @@ from shared.test_types import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Prompt Templates
+# User Prompt Template (Task-specific)
 # ---------------------------------------------------------------------------
 
-REVIEW_PROMPT_TEMPLATE: str = """\
-You are a senior code reviewer analyzing a code refactoring.
+USER_REVIEW_PROMPT: str = """\
 Compare the old and new code, and evaluate the test results.
 
 Old code (before refactoring):
@@ -52,8 +52,9 @@ Per-test results (with failure reasons if available):
 
 Return your analysis as JSON (do NOT include markdown code fences):
 {{
-  "semantic_diff": "Describe behavioral differences between old and new code. \
-If identical, say so.",
+  "semantic_diff": "A SINGLE STRING describing behavioral differences \
+between old and new code. If identical, write 'Behavior is identical.' \
+Do NOT return a nested object.",
   "risk_warnings": [
     {{
       "description": "A specific risk or behavioral change",
@@ -183,7 +184,7 @@ class ReviewGenerator:
                     lines.append(line)
                 test_items_text = "\n".join(lines)
 
-        prompt = REVIEW_PROMPT_TEMPLATE.format(
+        prompt = USER_REVIEW_PROMPT.format(
             old_source=old_source[:8000],
             new_source=new_source[:8000],
             golden_output=json.dumps(golden_output, indent=2, default=str)[:4000],
@@ -195,8 +196,13 @@ class ReviewGenerator:
             test_items_text=test_items_text,
         )
 
-        response = self.llm_client.generate(prompt)
-        return self._parse_response(before_files, after_files, response)
+        response = self.llm_client.generate(prompt, system_override=SYSTEM_REVIEW)
+        review = self._parse_response(before_files, after_files, response)
+
+        # 加入 source_analysis（如果有的話）
+        review.source_analysis = rec.source_analysis
+
+        return review
 
     def _generate_overall_assessment(
         self,

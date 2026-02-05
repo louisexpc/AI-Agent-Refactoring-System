@@ -75,12 +75,12 @@ class ModuleTestRunner:
             encoding="utf-8",
         )
 
-        # 先從完整 stdout 解析個別 test item（需要在截斷前）
-        failure_reasons = _parse_failure_reasons(run_result.stdout)
-        test_items = _parse_pytest_verbose_items(run_result.stdout, failure_reasons)
-
-        # 解析 passed/failed/errored from stdout
-        passed, failed, errored = _parse_test_summary(run_result.stdout)
+        # 使用 plugin 的解析方法（可插拔）
+        passed, failed, errored, test_items = plugin.parse_test_output(
+            run_result.stdout,
+            run_result.stderr,
+            run_result.exit_code,
+        )
 
         return UnitTestResult(
             test_file=test_file.path,

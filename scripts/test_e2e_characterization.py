@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 RUN_ID = "test_result"
-MAPPING_FILE = PROJECT_ROOT / "scripts/mock_mapping.json"
+MAPPING_FILE = PROJECT_ROOT / "scripts/mapping_1.json"
 ARTIFACTS_ROOT = PROJECT_ROOT / "artifacts"
 
 
@@ -115,7 +115,8 @@ def main() -> None:
 
     # 執行 stage test
     logger.info("Running stage test with %d module mappings...", len(mappings))
-    report = run_stage_test(
+    # report is kept for the commented debug code below
+    report = run_stage_test(  # noqa: F841
         run_id=RUN_ID,
         repo_dir=repo_dir,
         refactored_repo_dir=refactored_repo_dir,

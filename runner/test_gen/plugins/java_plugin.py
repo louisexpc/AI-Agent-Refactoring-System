@@ -60,3 +60,24 @@ class JavaPlugin(LanguagePlugin):
         timeout: int,
     ) -> tuple[bool, str]:
         raise NotImplementedError("Java plugin not yet implemented")
+
+    def parse_test_output(
+        self,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+    ) -> tuple[int, int, int, list[Any]]:
+        raise NotImplementedError("Java plugin not yet implemented")
+
+    def check_test_syntax(
+        self,
+        test_content: str,
+    ) -> tuple[bool, str]:
+        raise NotImplementedError("Java plugin not yet implemented")
+
+    def check_source_compilation(
+        self,
+        module_files: list[Path],
+        work_dir: Path,
+    ) -> tuple[bool, str]:
+        raise NotImplementedError("Java plugin not yet implemented")

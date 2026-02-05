@@ -37,11 +37,13 @@ class VertexLLMClient:
         model_name: Gemini 模型名稱。
         project_id: GCP project ID（None 則自動偵測）。
         location: GCP region。
+        system_instruction: 系統指令（角色定義和行為準則）。
     """
 
     model_name: str = "gemini-2.5-pro"
     project_id: str | None = None
     location: str = "us-central1"
+    system_instruction: str | None = None
     _model: Any = field(default=None, repr=False)
 
     def _ensure_init(self) -> None:
@@ -65,22 +67,37 @@ class VertexLLMClient:
             location=self.location,
             credentials=credentials,
         )
-        self._model = GenerativeModel(self.model_name)
+        self._model = GenerativeModel(
+            self.model_name,
+            system_instruction=self.system_instruction,
+        )
 
-    def generate(self, prompt: str, max_retries: int = 5) -> str:
+    def generate(
+        self, prompt: str, max_retries: int = 5, system_override: str | None = None
+    ) -> str:
         """送出 prompt 並取得回應文字，含 429 retry。
 
         Args:
-            prompt: 完整 prompt 文字。
+            prompt: User prompt 文字。
             max_retries: 最大重試次數。
+            system_override: 臨時 system instruction（覆蓋預設）。
 
         Returns:
             LLM 回應文字。
         """
         self._ensure_init()
+
+        # 如果有 system_override，創建臨時 model
+        if system_override:
+            from vertexai.generative_models import GenerativeModel
+
+            model = GenerativeModel(self.model_name, system_instruction=system_override)
+        else:
+            model = self._model
+
         for attempt in range(max_retries + 1):
             try:
-                response = self._model.generate_content(prompt)
+                response = model.generate_content(prompt)
                 return response.text.strip()
             except Exception as exc:
                 if "429" in str(exc) or "ResourceExhausted" in type(exc).__name__:
