@@ -2,15 +2,44 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Literal, TypeAlias
+
+SUPPORTED_LANGUAGES: tuple[str, ...] = (
+    "python",
+    "javascript",
+    "typescript",
+    "go",
+    "csharp",
+    "php",
+    "java",
+    "rust",
+    "c",
+    "cpp",
+)
+SUPPORTED_LANGUAGES_EXTENSIONS: dict[str, str] = {
+    "python": ".py",
+    "javascript": ".js",
+    "typescript": ".ts",
+    "go": ".go",
+    "csharp": ".cs",
+    "php": ".php",
+    "java": ".java",
+    "rust": ".rs",
+    "c": ".c",
+    "cpp": ".cpp",
+}
+
+Language: TypeAlias = Literal[*SUPPORTED_LANGUAGES]
 
 
-def filter_depgraph_python_json(json_path: str | Path) -> Path:
+# Filter for DepGraph, can be used as Public API for users to build customized graph.
+def filter_depgraph_json(json_path: str | Path, lang: Language) -> Path:
     """
-    Read a DepGraph JSON file, filter nodes/edges with lang == "python",
-    and write a new JSON file whose name is suffixed with "_python".
+    Read a DepGraph JSON file, filter nodes/edges with lang == {lang},
+    and write a new JSON file whose name is suffixed with f"_{lang}".
 
     Example:
+        if lang='python':
         input:  /repo/artifacts/dep_graph.json
         output: /repo/artifacts/dep_graph_python.json
 
@@ -33,14 +62,14 @@ def filter_depgraph_python_json(json_path: str | Path) -> Path:
     if not isinstance(nodes, list) or not isinstance(edges, list):
         raise ValueError("Invalid DepGraph JSON: 'nodes' and 'edges' must be lists.")
 
-    def is_python_lang(v: Any) -> bool:
-        return isinstance(v, str) and v.lower() == "python"
+    def is_target_lang(v: Any) -> bool:
+        return isinstance(v, str) and v.lower() == lang.lower()
 
     filtered_nodes = [
-        n for n in nodes if isinstance(n, dict) and is_python_lang(n.get("lang"))
+        n for n in nodes if isinstance(n, dict) and is_target_lang(n.get("lang"))
     ]
     filtered_edges = [
-        e for e in edges if isinstance(e, dict) and is_python_lang(e.get("lang"))
+        e for e in edges if isinstance(e, dict) and is_target_lang(e.get("lang"))
     ]
 
     # Keep all top-level fields, but replace nodes/edges with filtered versions
@@ -48,7 +77,7 @@ def filter_depgraph_python_json(json_path: str | Path) -> Path:
     out_data["nodes"] = filtered_nodes
     out_data["edges"] = filtered_edges
 
-    out_path = in_path.with_name(f"{in_path.stem}_python{in_path.suffix}")
+    out_path = in_path.with_name(f"{in_path.stem}_{lang}{in_path.suffix}")
     out_path.write_text(
         json.dumps(out_data, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -56,11 +85,11 @@ def filter_depgraph_python_json(json_path: str | Path) -> Path:
     return out_path
 
 
-def filter_depmetrics_python_json(json_path: str | Path) -> Path:
+def filter_depmetrics_json(json_path: str | Path, lang: Language) -> Path:
     """
     Read a DepMetrics JSON file, keep only DepFileMetrics entries whose `path`
-    endswith ".py" (case-insensitive),
-    and write a new JSON file suffixed with "_python".
+    endswith ".<extension>" (case-insensitive),
+    and write a new JSON file suffixed with "_<lang>".
 
     Example:
         input:  /repo/artifacts/dep_metrics.json
@@ -82,19 +111,21 @@ def filter_depmetrics_python_json(json_path: str | Path) -> Path:
     if not isinstance(files, list):
         raise ValueError("Invalid DepMetrics JSON: top-level 'files' must be a list.")
 
-    def is_py_path(p: Any) -> bool:
-        return isinstance(p, str) and p.lower().endswith(".py")
+    def is_target_path(p: Any) -> bool:
+        return isinstance(p, str) and p.lower().endswith(
+            SUPPORTED_LANGUAGES_EXTENSIONS[lang]
+        )
 
     filtered_files = [
         item
         for item in files
-        if isinstance(item, dict) and is_py_path(item.get("path"))
+        if isinstance(item, dict) and is_target_path(item.get("path"))
     ]
 
     out_data = dict(data)
     out_data["files"] = filtered_files
 
-    out_path = in_path.with_name(f"{in_path.stem}_python{in_path.suffix}")
+    out_path = in_path.with_name(f"{in_path.stem}_{lang}{in_path.suffix}")
     out_path.write_text(
         json.dumps(out_data, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -102,13 +133,13 @@ def filter_depmetrics_python_json(json_path: str | Path) -> Path:
     return out_path
 
 
-def filter_depreverseindex_python_json(json_path: str | Path) -> Path:
+def filter_depreverseindex_json(json_path: str | Path, lang: Language) -> Path:
     """
     Read a DepReverseIndex JSON file and keep DepReverseIndexEntry items where:
-      - entry.dst endswith ".py" (case-insensitive), OR
-      - any ref.src in entry.refs endswith ".py" (case-insensitive)
+      - entry.dst endswith ".<extension>" (case-insensitive), OR
+      - any ref.src in entry.refs endswith ".<extension>" (case-insensitive)
 
-    Writes a new JSON file suffixed with "_python".
+    Writes a new JSON file suffixed with "_<lang>".
 
     Example:
         input:  /repo/artifacts/dep_reverse_index.json
@@ -132,22 +163,24 @@ def filter_depreverseindex_python_json(json_path: str | Path) -> Path:
             "Invalid DepReverseIndex JSON: top-level 'items' must be a list."
         )
 
-    def is_py_path(p: Any) -> bool:
-        return isinstance(p, str) and p.lower().endswith(".py")
+    def is_target_path(p: Any) -> bool:
+        return isinstance(p, str) and p.lower().endswith(
+            SUPPORTED_LANGUAGES_EXTENSIONS[lang]
+        )
 
     def keep_entry(entry: Any) -> bool:
         if not isinstance(entry, dict):
             return False
 
         # Rule 1: dst is .py
-        if is_py_path(entry.get("dst")):
+        if is_target_path(entry.get("dst")):
             return True
 
         # Rule 2: any ref.src is .py
         refs = entry.get("refs", [])
         if isinstance(refs, list):
             for r in refs:
-                if isinstance(r, dict) and is_py_path(r.get("src")):
+                if isinstance(r, dict) and is_target_path(r.get("src")):
                     return True
 
         return False
@@ -157,7 +190,7 @@ def filter_depreverseindex_python_json(json_path: str | Path) -> Path:
     out_data = dict(data)
     out_data["items"] = filtered_items
 
-    out_path = in_path.with_name(f"{in_path.stem}_python{in_path.suffix}")
+    out_path = in_path.with_name(f"{in_path.stem}_{lang}{in_path.suffix}")
     out_path.write_text(
         json.dumps(out_data, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -170,12 +203,14 @@ if __name__ == "__main__":
         "/home/louisexpc/TSMC-2026-Hackathon/artifacts/2cca5c3ab95b491a9d42d7915c286bc6"
     )
     dep_graph_path = root + r"/depgraph/dep_graph_light.json"
-    output_path = filter_depgraph_python_json(dep_graph_path)
+    output_path = filter_depgraph_json(dep_graph_path, Language.PYTHON)
     print(f"Filtered DepGraph JSON written to: {output_path}")
     metric_json_path = root + r"/depgraph/dep_metrics.json"
-    output_metric_path = filter_depmetrics_python_json(metric_json_path)
+    output_metric_path = filter_depmetrics_json(metric_json_path, Language.PYTHON)
     print(f"Filtered DepMetrics JSON written to: {output_metric_path}")
 
     dep_reverse_json_path = root + r"/depgraph/dep_reverse_index_light.json"
-    output_depreverse_path = filter_depreverseindex_python_json(dep_reverse_json_path)
+    output_depreverse_path = filter_depreverseindex_json(
+        dep_reverse_json_path, Language.PYTHON
+    )
     print(f"Filtered DepReverseIndex JSON written to: {output_depreverse_path}")

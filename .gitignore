@@ -17,3 +17,6 @@ build/
 
 #RepoIngestion
 artifacts/
+workspace/
+*.log
+*.json

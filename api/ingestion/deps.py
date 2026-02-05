@@ -13,7 +13,11 @@ class IngestionService(Protocol):
     """Ingestion 的服務介面定義。"""
 
     def start_run(
-        self, repo_url: str, start_prompt: str | None, options: dict | None
+        self,
+        repo_url: str,
+        start_prompt: str | None,
+        options: dict | None,
+        save_path: str | None,
     ) -> str: ...
 
     def run_pipeline(self, run_id: str) -> None: ...
@@ -33,11 +37,17 @@ class InMemoryIngestionService:
             artifacts_root: artifacts 根目錄（可為 null，則使用預設路徑）。
         """
         self._runs: dict[str, RunRecord] = {}
-        self._run_inputs: dict[str, tuple[str, str | None, dict | None]] = {}
+        self._run_inputs: dict[
+            str, tuple[str, str | None, dict | None, str | None]
+        ] = {}
         self._artifacts_root = artifacts_root
 
     def start_run(
-        self, repo_url: str, start_prompt: str | None, options: dict | None
+        self,
+        repo_url: str,
+        start_prompt: str | None,
+        options: dict | None,
+        save_path: str | None,
     ) -> str:
         """建立 run 並回傳 run_id。
 
@@ -54,13 +64,19 @@ class InMemoryIngestionService:
 
         ensure_repo_root_on_path()
         repo_root = Path(__file__).resolve().parents[2]
+        print(f"Repo root: {repo_root}")
+        if save_path is not None:
+            # 覆蓋 _artifacts_root 為 save_path，讓後續 pipeline 產出物能寫入指定位置
+            rel_save_path = normalize_relative_path(save_path, base_dir=repo_root)
+            self._artifacts_root = repo_root / rel_save_path
+            print(f"Set artifacts_root to: {self._artifacts_root}")
         artifacts_root = self._artifacts_root or default_artifacts_root(repo_root)
         layout = ArtifactLayout(artifacts_root)
         repo = RunRepository(layout)
         run = repo.create_run(repo_url, start_prompt)
         run_id = run.run_id
         self._runs[run_id] = run
-        self._run_inputs[run_id] = (repo_url, start_prompt, options)
+        self._run_inputs[run_id] = (repo_url, start_prompt, options, save_path)
         return run_id
 
     def run_pipeline(self, run_id: str) -> None:
@@ -81,7 +97,7 @@ class InMemoryIngestionService:
 
         ensure_repo_root_on_path()
         if run_id in self._run_inputs:
-            repo_url, start_prompt, _options = self._run_inputs[run_id]
+            repo_url, start_prompt, _options, save_path = self._run_inputs[run_id]
         else:
             repo_url = None
             start_prompt = None
@@ -313,3 +329,32 @@ def _sha256_file(path: Path) -> str | None:
         return digest.hexdigest()
     except OSError:
         return None
+
+
+def normalize_relative_path(
+    save_path: str | Path,
+    *,
+    base_dir: Path,
+) -> Path:
+    """
+    Normalize save_path to a path relative to base_dir.
+
+    Rules:
+    - Absolute paths are converted to relative by stripping anchor.
+    - Path traversal outside base_dir is rejected.
+    """
+    p = Path(save_path)
+
+    # 1. 絕對路徑 → 去掉 root anchor（/ 或 C:\）
+    if p.is_absolute():
+        p = Path(*p.parts[1:])  # /a/b/c -> a/b/c
+
+    # 2. Normalize (remove .. / .)
+    candidate = (base_dir / p).resolve()
+
+    # 3. 防止 path traversal
+    if not candidate.is_relative_to(base_dir):
+        raise ValueError(f"Invalid save_path (escapes base_dir): {save_path}")
+
+    # 4. 回傳「相對於 base_dir 的 Path」
+    return candidate.relative_to(base_dir)

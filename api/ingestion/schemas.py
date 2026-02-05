@@ -19,6 +19,7 @@ class StartRunRequest(BaseModel):
 
     repo_url: str
     start_prompt: str | None = None
+    save_path: str = "/workspace"
     options: IngestionOptions | None = None
 
 

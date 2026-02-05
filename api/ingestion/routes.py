@@ -28,6 +28,7 @@ def start_run(
         repo_url=payload.repo_url,
         start_prompt=payload.start_prompt,
         options=payload.options.model_dump() if payload.options else None,
+        save_path=payload.save_path,
     )
     background_tasks.add_task(service.run_pipeline, run_id)
     return StartRunResponse(run_id=run_id)
