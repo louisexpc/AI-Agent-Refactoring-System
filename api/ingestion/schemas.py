@@ -27,13 +27,19 @@ class StartRunResponse(BaseModel):
     """啟動 run 的 response DTO。"""
 
     run_id: str
+    run_dir: str = Field(..., description="clone repo 分析本地絕對路徑dir")
 
 
 class RunStatusResponse(BaseModel):
-    """run 狀態查詢的 response DTO。"""
+    """run 狀態查詢的 response DTO。
+    artifacts 欄位目前只提供 :
+        - "depgraph": 依賴關係圖產物
+        - "exec_matrix": 執行矩陣產物
+        - "index": Repo 索引產物
+    """
 
     status: RunStatus
     commit_sha: str | None = None
-    artifacts: list[ArtifactRef] = Field(default_factory=list)
+    artifacts: dict[str, list[ArtifactRef]] = Field(default_factory=dict)
     scopes: list[ScopeCandidate] = Field(default_factory=list)
     errors: ErrorSummary | None = None

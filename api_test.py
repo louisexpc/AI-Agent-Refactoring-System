@@ -50,6 +50,7 @@ def test_start_run() -> None:
     status, body = _request_json("POST", "/ingestion/runs", payload)
     assert status == 200
     assert isinstance(body.get("run_id"), str)
+    assert isinstance(body.get("run_dir"), str)
 
 
 def test_get_run() -> None:

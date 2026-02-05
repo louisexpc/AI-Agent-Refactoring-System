@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import mimetypes
 from pathlib import Path
 from typing import Protocol
 
@@ -18,13 +17,15 @@ class IngestionService(Protocol):
         start_prompt: str | None,
         options: dict | None,
         save_path: str | None,
-    ) -> str: ...
+    ) -> tuple[str, str]: ...
 
     def run_pipeline(self, run_id: str) -> None: ...
 
     def get_run(self, run_id: str) -> RunRecord: ...
 
     def get_artifact(self, run_id: str, name: str) -> Path: ...
+
+    def get_depgraph_filtered(self, run_id: str, lang: str, kind: str) -> Path: ...
 
 
 class InMemoryIngestionService:
@@ -38,7 +39,7 @@ class InMemoryIngestionService:
         """
         self._runs: dict[str, RunRecord] = {}
         self._run_inputs: dict[
-            str, tuple[str, str | None, dict | None, str | None]
+            str, tuple[str, str | None, dict | None, str | None, Path]
         ] = {}
         self._artifacts_root = artifacts_root
 
@@ -48,7 +49,7 @@ class InMemoryIngestionService:
         start_prompt: str | None,
         options: dict | None,
         save_path: str | None,
-    ) -> str:
+    ) -> tuple[str, str]:
         """建立 run 並回傳 run_id。
 
         Args:
@@ -57,7 +58,7 @@ class InMemoryIngestionService:
             options: 其他選項（dict）。
 
         Returns:
-            run_id。
+            (run_id, run_dir)。
         """
         from core.storage.artifacts import ArtifactLayout, default_artifacts_root
         from runner.ingestion_main import RunRepository, ensure_repo_root_on_path
@@ -65,19 +66,25 @@ class InMemoryIngestionService:
         ensure_repo_root_on_path()
         repo_root = Path(__file__).resolve().parents[2]
         print(f"Repo root: {repo_root}")
-        if save_path is not None:
-            # 覆蓋 _artifacts_root 為 save_path，讓後續 pipeline 產出物能寫入指定位置
-            rel_save_path = normalize_relative_path(save_path, base_dir=repo_root)
-            self._artifacts_root = repo_root / rel_save_path
-            print(f"Set artifacts_root to: {self._artifacts_root}")
         artifacts_root = self._artifacts_root or default_artifacts_root(repo_root)
+        if save_path is not None:
+            rel_save_path = normalize_relative_path(save_path, base_dir=repo_root)
+            artifacts_root = repo_root / rel_save_path
+            print(f"Set artifacts_root to: {artifacts_root}")
         layout = ArtifactLayout(artifacts_root)
         repo = RunRepository(layout)
         run = repo.create_run(repo_url, start_prompt)
         run_id = run.run_id
         self._runs[run_id] = run
-        self._run_inputs[run_id] = (repo_url, start_prompt, options, save_path)
-        return run_id
+        self._run_inputs[run_id] = (
+            repo_url,
+            start_prompt,
+            options,
+            save_path,
+            artifacts_root,
+        )
+        run_dir = layout.run_dir(run_id).resolve()
+        return run_id, str(run_dir)
 
     def run_pipeline(self, run_id: str) -> None:
         """執行完整 ingestion pipeline。
@@ -97,13 +104,19 @@ class InMemoryIngestionService:
 
         ensure_repo_root_on_path()
         if run_id in self._run_inputs:
-            repo_url, start_prompt, _options, save_path = self._run_inputs[run_id]
+            (
+                repo_url,
+                start_prompt,
+                _options,
+                save_path,
+                artifacts_root,
+            ) = self._run_inputs[run_id]
         else:
             repo_url = None
             start_prompt = None
             _options = None
-        repo_root = Path(__file__).resolve().parents[2]
-        artifacts_root = self._artifacts_root or default_artifacts_root(repo_root)
+            repo_root = Path(__file__).resolve().parents[2]
+            artifacts_root = self._artifacts_root or default_artifacts_root(repo_root)
         layout = ArtifactLayout(artifacts_root)
         repo = RunRepository(layout)
 
@@ -238,13 +251,11 @@ class InMemoryIngestionService:
         Returns:
             `RunRecord`。
         """
-        from core.storage.artifacts import ArtifactLayout, default_artifacts_root
+        from core.storage.artifacts import ArtifactLayout
         from runner.ingestion_main import RunRepository, ensure_repo_root_on_path
 
         ensure_repo_root_on_path()
-        repo_root = Path(__file__).resolve().parents[2]
-        artifacts_root = self._artifacts_root or default_artifacts_root(repo_root)
-        layout = ArtifactLayout(artifacts_root)
+        layout = ArtifactLayout(self._resolve_artifacts_root(run_id))
         repo = RunRepository(layout)
         return repo.get_run(run_id)
 
@@ -261,13 +272,11 @@ class InMemoryIngestionService:
         Raises:
             FileNotFoundError: stub 未提供檔案。
         """
-        from core.storage.artifacts import ArtifactLayout, default_artifacts_root
+        from core.storage.artifacts import ArtifactLayout
         from runner.ingestion_main import ensure_repo_root_on_path
 
         ensure_repo_root_on_path()
-        repo_root = Path(__file__).resolve().parents[2]
-        artifacts_root = self._artifacts_root or default_artifacts_root(repo_root)
-        layout = ArtifactLayout(artifacts_root)
+        layout = ArtifactLayout(self._resolve_artifacts_root(run_id))
         run_dir = layout.run_dir(run_id)
         if not run_dir.exists():
             raise FileNotFoundError(f"artifact not available: {run_id}/{name}")
@@ -288,6 +297,66 @@ class InMemoryIngestionService:
                 return path
         raise FileNotFoundError(f"artifact not available: {run_id}/{name}")
 
+    def get_depgraph_filtered(self, run_id: str, lang: str, kind: str) -> Path:
+        """取得指定語言過濾後的 depgraph 相關檔案。
+
+        Args:
+            run_id: run 識別碼。
+            lang: 目標語言（python/javascript/...）。
+            kind: graph | metrics | reverse
+
+        Returns:
+            過濾後的檔案路徑。
+        """
+        from core.storage.artifacts import ArtifactLayout
+        from runner.depgraph_filter import (
+            SUPPORTED_LANGUAGES,
+            filter_depgraph_json,
+            filter_depmetrics_json,
+            filter_depreverseindex_json,
+        )
+
+        if lang not in SUPPORTED_LANGUAGES:
+            raise ValueError(f"unsupported language: {lang}")
+        if kind not in {"graph", "metrics", "reverse"}:
+            raise ValueError(f"unsupported depgraph kind: {kind}")
+
+        layout = ArtifactLayout(self._resolve_artifacts_root(run_id))
+        run_dir = layout.run_dir(run_id)
+        depgraph_dir = run_dir / "depgraph"
+        if not depgraph_dir.exists():
+            raise FileNotFoundError(f"depgraph dir not found: {run_id}")
+
+        if kind == "graph":
+            base = depgraph_dir / "dep_graph_light.json"
+            if not base.exists():
+                base = depgraph_dir / "dep_graph.json"
+            if not base.exists():
+                raise FileNotFoundError("dep_graph.json not found")
+            return filter_depgraph_json(base, lang)
+
+        if kind == "metrics":
+            base = depgraph_dir / "dep_metrics.json"
+            if not base.exists():
+                raise FileNotFoundError("dep_metrics.json not found")
+            return filter_depmetrics_json(base, lang)
+
+        base = depgraph_dir / "dep_reverse_index_light.json"
+        if not base.exists():
+            base = depgraph_dir / "dep_reverse_index.json"
+        if not base.exists():
+            raise FileNotFoundError("dep_reverse_index.json not found")
+        return filter_depreverseindex_json(base, lang)
+
+    def _resolve_artifacts_root(self, run_id: str) -> Path:
+        from core.storage.artifacts import default_artifacts_root
+
+        repo_root = Path(__file__).resolve().parents[2]
+        run_inputs = self._run_inputs.get(run_id)
+        if run_inputs is not None:
+            return run_inputs[4]
+        return self._artifacts_root or default_artifacts_root(repo_root)
+
 
 _service = InMemoryIngestionService()
 
@@ -297,26 +366,28 @@ def get_ingestion_service() -> IngestionService:
     return _service
 
 
-def _collect_artifacts(run_dir: Path) -> list[ArtifactRef]:
-    artifacts: list[ArtifactRef] = []
-    for path in sorted(run_dir.rglob("*")):
-        if not path.is_file():
+def _collect_artifacts(run_dir: Path) -> dict[str, list[ArtifactRef]]:
+    groups = {
+        "depgraph": run_dir / "depgraph",
+        "exec_matrix": run_dir / "exec",
+        "index": run_dir / "index",
+    }
+    artifacts: dict[str, list[ArtifactRef]] = {}
+    for key, base in groups.items():
+        if not base.exists():
             continue
-        if path.name == "run_meta.json":
-            continue
-        rel_path = path.relative_to(run_dir).as_posix()
-        name = path.stem if path.suffix == ".json" else rel_path
-        mime, _encoding = mimetypes.guess_type(path.name)
-        sha256 = _sha256_file(path)
-        artifacts.append(
-            ArtifactRef(
-                name=name,
-                path=rel_path,
-                mime=mime,
-                size=path.stat().st_size,
-                sha256=sha256,
+        entries: list[ArtifactRef] = []
+        for path in sorted(base.rglob("*")):
+            if not path.is_file():
+                continue
+            entries.append(
+                ArtifactRef(
+                    name=path.stem if path.suffix == ".json" else path.name,
+                    path=str(path.resolve()),
+                    sha256=_sha256_file(path),
+                )
             )
-        )
+        artifacts[key] = entries
     return artifacts
 
 
