@@ -85,28 +85,3 @@ artifacts/test_result/
 ```python
 RUN_ID = "test_result"  # 改成你想要的名稱
 ```
-
-## 常見問題
-
-### Q: 執行失敗顯示 "Module not found"
-
-確保在專案根目錄執行，並且 `PYTHONPATH` 包含專案根目錄。
-
-### Q: GCP 認證失敗
-
-檢查：
-1. Key 檔案路徑是否正確
-2. Key 檔案是否有效（未過期）
-3. GCP project 是否啟用 Vertex AI API
-
-### Q: 想測試其他模組
-
-1. 準備新的 mapping JSON（如 `mapping_2.json`）
-2. 修改 `test_e2e_characterization.py:31` 的 `MAPPING_FILE`
-3. 重新執行
-
-## 相關文件
-
-- **完整說明**：`CLAUDE.md`（AI Context）
-- **專案文件**：`README.md`
-- **測試腳本**：`scripts/test_e2e_characterization.py`
