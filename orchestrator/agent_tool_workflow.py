@@ -6,21 +6,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Mapping, Sequence, TypedDict
 
+import requests
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_community.agent_toolkits import FileManagementToolkit
 from langchain_core.messages import BaseMessage, HumanMessage
+
 # from langchain_google_vertexai import ChatVertexAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
-import requests
 
 try:
     import yaml
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Please install PyYAML: pip install pyyaml") from exc
+from runner.test_gen.pipeline_tool import generate_test
 
 # =========================
 # Data models
@@ -178,8 +180,10 @@ def parse_app_config(config_path: Path) -> AppConfig:
     working_directory = _as_path(
         base_dir, str(raw.get("working_directory", "."))
     ).resolve()
-    ingest_url = str(raw.get("ingest_url",  "http://localhost:8000/ingestion/runs")) 
-    repo_url = str(raw.get("repo_url",  "https://github.com/emilybache/Racing-Car-Katas.git")) 
+    ingest_url = str(raw.get("ingest_url", "http://localhost:8000/ingestion/runs"))
+    repo_url = str(
+        raw.get("repo_url", "https://github.com/emilybache/Racing-Car-Katas.git")
+    )
 
     architect_raw = (
         raw.get("llm", {}).get("architect", {})
@@ -320,8 +324,8 @@ def init_llms(cfg: AppConfig, log: LogPacker):
 def build_graph(
     cfg: AppConfig,
     tools,
-    llm_architect: ChatVertexAI,
-    llm_engineer: ChatVertexAI,
+    llm_architect: ChatGoogleGenerativeAI,
+    llm_engineer: ChatGoogleGenerativeAI,
     log: LogPacker,
 ):
     """Builds and compiles the LangGraph workflow."""
@@ -339,7 +343,6 @@ def build_graph(
     architect_system_prompt = architect_prompt_raw.format(
         # working_directory=str(cfg.working_directory).rstrip("/"),
         # repo_dir=cfg.repo_dir.lstrip("./"),
-        
         # 如果需要 source_dir 或 repo_dir 也可以加進來
         source_dir=cfg.source_dir,
     )
@@ -373,7 +376,7 @@ def build_graph(
 
     llm_architect_with_tools = create_agent(
         llm_architect,
-        tools=tools + [refactor_code],
+        tools=tools + [refactor_code, generate_test],
         system_prompt=architect_system_prompt,
     )
 
@@ -477,7 +480,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
         },
     )
-    
 
     # 設定 API 端點網址
     ingest_url = cfg.ingest_url
@@ -504,7 +506,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     except requests.exceptions.RequestException as e:
         print(f"發送請求時發生錯誤: {e}")
-
 
     tools = init_file_management_tools(cfg, log)
     llm_architect, llm_engineer = init_llms(cfg, log)
