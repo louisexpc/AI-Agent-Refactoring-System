@@ -23,6 +23,7 @@ RUN apt-get update \
 RUN uv sync --frozen --no-install-project --no-python-downloads
 
 COPY orchestrator/ ./orchestrator/
+COPY runner/ ./runner/
 
 RUN uv sync --frozen --no-python-downloads
 

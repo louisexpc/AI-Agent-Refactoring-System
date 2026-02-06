@@ -22,6 +22,20 @@ try:
     import yaml
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Please install PyYAML: pip install pyyaml") from exc
+import sys
+
+def ensure_repo_root_on_path() -> Path:
+    """確保 repo root 已加入 sys.path。
+
+    Returns:
+        repo root 路徑。
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.append(str(repo_root))
+    return repo_root
+ensure_repo_root_on_path()
+
 from runner.test_gen.pipeline_tool import generate_test
 
 # =========================
