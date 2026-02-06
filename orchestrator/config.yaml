@@ -1,0 +1,34 @@
+# multi_agent orchestrator config (MVP)
+# 以 config.yaml 所在資料夾 orchestrator/ 當 base，
+# ".." 會 resolve 成 repo root/
+working_directory: ".."
+
+llm:
+  planner:
+    model: "gemini-2.5-pro"
+    project: "project-9a8bef6e-a88d-4922-a75"
+    location: "global"
+    temperature: 0
+  coder:
+    model: "gemini-2.5-pro"
+    project: "project-9a8bef6e-a88d-4922-a75"
+    location: "global"
+    temperature: 0
+
+prompts:
+  architect: "prompts/architect.md"
+  engineer: "prompts/engineer.md"
+
+# 下面這兩個路徑，是「相對於 working_directory（repo root）」的邏輯路徑
+source_dir: "./workspace/Racing-Car-Katas/Python"
+target_dir: "./workspace/refactor-golang"
+
+# This template is rendered via Python .format() with:
+# {working_directory}, {source_dir}, {target_dir}
+user_input_template: >
+  Refactor the codebase located in {working_directory}/{source_dir} into Golang.
+  Output the new code to the {working_directory}/{target_dir} directory.
+  Requirement: Preserve the exact business logic and include meaningful comments.
+
+# Logger output file (created under working_directory)
+log_filename: "multi_agent.log"
