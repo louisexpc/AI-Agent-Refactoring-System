@@ -435,6 +435,7 @@ def _process_single_mapping(
 
     test_dir = stage3_result["test_dir"]
     test_file_path = stage3_result["test_file_path"]
+    emitted_test_file = stage3_result.get("emitted_test_file")
 
     # Stage 4: Docker 執行 test（如果使用 sandbox）
     test_result: UnitTestResult | None = None
@@ -521,7 +522,7 @@ def _process_single_mapping(
     return CharacterizationRecord(
         module_mapping=mapping,
         golden_records=golden_records,
-        emitted_test_file=None,  # TODO: 從 stage3_result 取得
+        emitted_test_file=emitted_test_file,
         test_result=test_result,
         coverage_pct=test_result.coverage_pct if test_result else None,
         tested_functions=tested_functions,

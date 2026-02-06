@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 from pathlib import Path
@@ -13,10 +14,50 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _auto_find_mapping(repo_root: Path) -> Path:
+    """Auto-detect a mapping_*.json under workspace/ or spec/workspace/."""
+    candidates: list[Path] = []
+
+    for base in (
+        repo_root / "workspace" / "stage_1" / "stage_plan",
+        repo_root / "spec" / "workspace" / "stage_1" / "stage_plan",
+    ):
+        if base.is_dir():
+            candidates.extend(sorted(base.glob("mapping_*.json")))
+
+    if not candidates:
+        raise FileNotFoundError(
+            "No mapping_*.json found under:\n"
+            f"  - {repo_root / 'workspace/stage_1/stage_plan'}\n"
+            f"  - {repo_root / 'spec/workspace/stage_1/stage_plan'}\n"
+            "Please generate the stage plan first or pass --mapping <path>."
+        )
+
+    # but good enough for now). If you want, we can sort by mtime instead.
+    return candidates[-1]
+
+
 def main() -> None:
     """測試 pipeline（不使用 sandbox）。"""
-    # 讀取 mapping（從新目錄結構）
-    mapping_file = Path("workspace/stage_1/stage_plan/mapping_1.json")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mapping",
+        type=str,
+        default=None,
+        help="Path to mapping_*.json (relative to repo root or absolute).",
+    )
+    args = parser.parse_args()
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    if args.mapping:
+        mapping_path = Path(args.mapping)
+        mapping_file = (
+            mapping_path if mapping_path.is_absolute() else (repo_root / mapping_path)
+        )
+    else:
+        mapping_file = _auto_find_mapping(repo_root)
+
     logger.info("Loading mapping from %s", mapping_file)
     mapping_data = json.loads(mapping_file.read_text(encoding="utf-8"))
 

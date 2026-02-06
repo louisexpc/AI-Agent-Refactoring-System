@@ -29,6 +29,7 @@ from runner.test_gen.test_runner import ModuleTestRunner
 from shared.ingestion_types import DepGraph
 from shared.test_types import (
     CharacterizationRecord,
+    GoldenRecord,
     ModuleMapping,
     SourceFile,
     StageTestReport,
@@ -96,15 +97,24 @@ def generate_stage1_golden(
         encoding="utf-8",
     )
 
-    # 收集 dep_signatures
-    dep_signatures = {}
+    # 收集 dep_signatures（dict 用於寫入 JSON，str 用於傳給 plugin）
+    dep_signatures_dict: dict[str, str] = {}
     for sf in old_sources:
         sig = resolve_dependency_context(dep_graph, sf.path, repo_dir)
-        dep_signatures[sf.path] = sig
+        dep_signatures_dict[sf.path] = sig
     dep_sigs_path = golden_dir / "dep_signatures_before.json"
     dep_sigs_path.write_text(
-        json.dumps(dep_signatures, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(dep_signatures_dict, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+    # 將 dep_signatures 轉換為 string（去重後用換行連接）
+    seen_sigs: set[str] = set()
+    dep_sig_parts: list[str] = []
+    for sig in dep_signatures_dict.values():
+        if sig and sig not in seen_sigs:
+            seen_sigs.add(sig)
+            dep_sig_parts.append(sig)
+    dep_signatures_str = "\n".join(dep_sig_parts) if dep_sig_parts else ""
 
     # 生成 golden script（用 LLM，不執行）
     logger.info("Generating golden script for %s...", before_files)
@@ -114,7 +124,7 @@ def generate_stage1_golden(
     golden_script = old_plugin.generate_golden_script(
         source_code=source_code,
         module_paths=module_paths,
-        dep_signatures=dep_signatures,
+        dep_signatures=dep_signatures_str,
         guidance=guidance.model_dump() if guidance else None,
         llm_client=llm_client,
     )
@@ -145,7 +155,7 @@ def generate_stage1_golden(
         "golden_dir": golden_dir,
         "script_path": script_path,
         "guidance": guidance,
-        "dep_signatures": dep_signatures,
+        "dep_signatures": dep_signatures_dict,
     }
 
 
@@ -193,12 +203,15 @@ def generate_stage3_tests(
     new_sources = [SourceFile(path=p, lang=target_language) for p in after_files]
 
     # 讀取 golden_records（如果提供）
-    golden_records = []
+    golden_records: list[GoldenRecord] = []
     if golden_records_path and golden_records_path.exists():
         logger.info("Loading golden records from %s", golden_records_path)
-        # 簡化版：直接當作 dict 使用，不用完整的 GoldenRecord 物件
-        # 實際使用時 TestEmitter 會處理
-        _ = json.loads(golden_records_path.read_text(encoding="utf-8"))
+        try:
+            raw_records = json.loads(golden_records_path.read_text(encoding="utf-8"))
+            golden_records = [GoldenRecord(**rec) for rec in raw_records]
+            logger.info("Loaded %d golden records", len(golden_records))
+        except (json.JSONDecodeError, TypeError, KeyError) as exc:
+            logger.warning("Failed to parse golden records: %s", exc)
     else:
         logger.warning(
             "No golden records provided, generating test without golden anchoring"
@@ -256,6 +269,7 @@ def generate_stage3_tests(
         "test_dir": test_dir,
         "test_file_path": emitted_path,
         "dep_signatures": dep_signatures,
+        "emitted_test_file": emitted,
     }
 
 
