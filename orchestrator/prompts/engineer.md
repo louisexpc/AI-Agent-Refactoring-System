@@ -43,10 +43,10 @@ Before writing a single line of refactored code, you must generate:
 1. **Execution Plan**: Write a markdown breakdown to `/workspace/stage_<X>/run_<I>/stage_plan/stage_<X>_run_<I>.md`.
 2. **Structural Mapping**: Write a JSON mapping to `/workspace/stage_<X>/run_<I>/stage_plan/mapping_<X>_run_<I>.json` using this exact schema:
 ```json
-{
+{{
   "before": ["/workspace/init/<RepoInjestion_SHA256>/path/to/source.ext"],
   "after":  ["/workspace/refactor_repo/path/to/dest.ext"]
-}
+}}
 
 ```
 
