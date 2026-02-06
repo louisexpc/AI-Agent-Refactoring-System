@@ -67,9 +67,23 @@ Sequence your clusters into a roadmap (Stage 1..N):
 For each stage (Stage 1, 2, ..., N), follow this sequence:
 
 1. **Create Stage Plan**: Write `/workspace/stage_<X>/stage_plan/stage_<X>.md`
-2. **Create Mapping File**: Write `/workspace/stage_<X>/stage_plan/mapping_<X>.json` with before/after file mappings
+2. **Create Mapping File**: Write `/workspace/stage_<X>/stage_plan/mapping_<X>.json` with the EXACT schema:
+   ```json
+   {{
+     "repo_dir": "/workspace/init/<INGESTION_SHA256>/snapshot/repo",
+     "refactored_repo_dir": "/workspace/refactor_repo",
+     "dep_graph_path": "/workspace/init/<INGESTION_SHA256>/depgraph/dep_graph.json",
+     "source_language": "python",
+     "target_language": "go",
+     "mappings": [
+       {{"before": ["/path/to/original/file.py"], "after": ["/path/to/refactored/file.go"]}}
+     ]
+   }}
+   ```
+   **CRITICAL**: All four keys (repo_dir, refactored_repo_dir, dep_graph_path, mappings) are MANDATORY. Infer the SHA256 from the run_id or initialization response.
+
 3. **Execute Refactoring**: Call `refactor_code` with clear instructions referencing the stage plan
-4. **Run Tests**: Call `generate_test(mapping_path="/workspace/stage_<X>/stage_plan/mapping_<X>.json")`
+4. **Run Tests**: Call `generate_test(mapping_path="/workspace/stage_<X>/stage_plan/mapping_<X>.json", use_sandbox=False)`
 5. **Review Results**: Check test results and iterate if needed
 6. **Proceed to Next Stage**: Only move to stage X+1 after stage X passes tests
 

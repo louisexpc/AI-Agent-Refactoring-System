@@ -118,6 +118,27 @@ def generate_test(
             )
 
         mapping_data = json.loads(mapping_file.read_text(encoding="utf-8"))
+        
+        # 驗證必要的字段
+        required_fields = ["repo_dir", "refactored_repo_dir", "dep_graph_path", "mappings"]
+        missing_fields = [f for f in required_fields if f not in mapping_data]
+        if missing_fields:
+            error_msg = (
+                f"Mapping file missing required fields: {missing_fields}\n"
+                f"Required schema: {{\n"
+                f'  "repo_dir": "/workspace/init/<SHA256>/snapshot/repo",\n'
+                f'  "refactored_repo_dir": "/workspace/refactor_repo",\n'
+                f'  "dep_graph_path": "/workspace/init/<SHA256>/depgraph/dep_graph.json",\n'
+                f'  "source_language": "python",\n'
+                f'  "target_language": "go",\n'
+                f'  "mappings": [{{"before": [...], "after": [...]}}]\n'
+                f"}}"
+            )
+            return json.dumps(
+                {"ok": False, "error": error_msg},
+                ensure_ascii=False,
+            )
+        
         # 新結構：workspace/stage_X/run_I/stage_plan/mapping_X_run_I.json
         # test_result 與 stage_plan 平行，都在 run_I/ 下
         run_dir = mapping_file.parent.parent  # run_I/
