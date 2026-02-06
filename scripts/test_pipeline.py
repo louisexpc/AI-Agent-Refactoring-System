@@ -15,21 +15,28 @@ logger = logging.getLogger(__name__)
 
 
 def _auto_find_mapping(repo_root: Path) -> Path:
-    """Auto-detect a mapping_*.json under workspace/ or spec/workspace/."""
+    """Auto-detect a mapping_*.json under workspace/ or spec/workspace/.
+
+    新結構：workspace/stage_X/run_I/stage_plan/mapping_X_run_I.json
+    """
     candidates: list[Path] = []
 
+    # 新結構：workspace/stage_X/run_I/stage_plan/
     for base in (
-        repo_root / "workspace" / "stage_1" / "stage_plan",
-        repo_root / "spec" / "workspace" / "stage_1" / "stage_plan",
+        repo_root / "workspace",
+        repo_root / "spec" / "workspace",
     ):
         if base.is_dir():
-            candidates.extend(sorted(base.glob("mapping_*.json")))
+            # 搜索 stage_*/run_*/stage_plan/mapping_*.json
+            candidates.extend(
+                sorted(base.glob("stage_*/run_*/stage_plan/mapping_*.json"))
+            )
 
     if not candidates:
         raise FileNotFoundError(
             "No mapping_*.json found under:\n"
-            f"  - {repo_root / 'workspace/stage_1/stage_plan'}\n"
-            f"  - {repo_root / 'spec/workspace/stage_1/stage_plan'}\n"
+            f"  - {repo_root / 'workspace/stage_*/run_*/stage_plan/'}\n"
+            f"  - {repo_root / 'spec/workspace/stage_*/run_*/stage_plan/'}\n"
             "Please generate the stage plan first or pass --mapping <path>."
         )
 
@@ -64,9 +71,11 @@ def main() -> None:
     # 建立 LLM client
     llm_client = create_vertex_client()
 
-    # 輸出到 stage_plan/test_result/
-    test_result_dir = str(mapping_file.parent / "test_result")
-    run_id = "stage_1"
+    # 新結構：test_result 與 stage_plan 平行，都在 run_I/ 下
+    run_dir = mapping_file.parent.parent  # run_I/
+    test_result_dir = str(run_dir / "test_result")
+    stage_dir = run_dir.parent  # stage_X/
+    run_id = f"{stage_dir.name}_{run_dir.name}"  # e.g. "stage_1_run_1"
     logger.info("\n=== Running 5-Stage Pipeline (use_sandbox=False) ===")
     logger.info("Output: %s", test_result_dir)
 
