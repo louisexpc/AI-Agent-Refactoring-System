@@ -34,12 +34,10 @@ user_input_template: >
 
   Refactor the Python code file under the `/workspace/init/{source_dir}/snapshot/repo` folder into Go.
   ## Phase 1: Initial Analysis & Specification
-  Before performing any planning or modification tasks, you MUST first read and reason over two JSON files
-  1. `{working_directory}/workspace/init/{source_dir}/depgraph/dep_graph_light.json`
-  2. `{working_directory}/workspace/init/{source_dir}/depgraph/dep_reverse_index_light.json`
-
-
-  Analyze the project structure and dependencies to generate a `spec.md` in the `{working_directory}/workspace/init/plan` directory.
+  Before performing any planning or modification tasks, you MUST first read and reason over two JSON files and the Python code files.
+  1. `/workspace/init/{source_dir}/depgraph/dep_graph_light.json`
+  2. `/workspace/init/{source_dir}/depgraph/dep_reverse_index_light.json`
+  3. `/workspace/init/{source_dir}/snapshot/repo/*.py`
 
   Analyze the project structure and dependencies to generate a `spec.md` in the `/workspace/init/plan` directory.
 
