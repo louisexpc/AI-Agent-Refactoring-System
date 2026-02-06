@@ -13,8 +13,9 @@ from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_community.agent_toolkits import FileManagementToolkit
 from langchain_core.messages import BaseMessage, HumanMessage
+
+# from langchain_google_vertexai import ChatVertexAI
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_google_vertexai import ChatVertexAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -287,7 +288,6 @@ def render_user_input(cfg: AppConfig) -> str:
     """Renders the user input prompt from template + YAML parameters."""
 
     return cfg.user_input_template.format(
-        working_directory=str(cfg.working_directory).rstrip("/"),
         source_dir=cfg.source_dir.lstrip("./"),
         target_dir=cfg.target_dir.lstrip("./"),
         repo_dir=cfg.repo_dir.lstrip("./"),
@@ -420,8 +420,8 @@ def init_llms(cfg: AppConfig, log: LogPacker):
 def build_graph(
     cfg: AppConfig,
     tools,
-    llm_architect: ChatVertexAI,
-    llm_engineer: ChatVertexAI,
+    llm_architect: ChatGoogleGenerativeAI,
+    llm_engineer: ChatGoogleGenerativeAI,
     log: LogPacker,
 ):
     """Builds and compiles the LangGraph workflow."""
@@ -430,14 +430,14 @@ def build_graph(
     engineer_prompt_raw = load_prompt(cfg.prompts.engineer_path)
 
     engineer_system_prompt = engineer_prompt_raw.format(
-        working_directory=str(cfg.working_directory).rstrip("/"),
+        # working_directory=str(cfg.working_directory).rstrip("/"),
         target_dir=cfg.target_dir.lstrip("./"),
         # 如果需要 source_dir 或 repo_dir 也可以加進來
         # source_dir=cfg.source_dir,
     )
 
     architect_system_prompt = architect_prompt_raw.format(
-        working_directory=str(cfg.working_directory).rstrip("/"),
+        # working_directory=str(cfg.working_directory).rstrip("/"),
         # repo_dir=cfg.repo_dir.lstrip("./"),
         # 如果需要 source_dir 或 repo_dir 也可以加進來``
         source_dir=cfg.source_dir,
