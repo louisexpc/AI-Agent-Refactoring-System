@@ -11,7 +11,8 @@ from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_community.agent_toolkits import FileManagementToolkit
 from langchain_core.messages import BaseMessage, HumanMessage
-from langchain_google_vertexai import ChatVertexAI
+# from langchain_google_vertexai import ChatVertexAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 import requests
@@ -288,7 +289,7 @@ def init_llms(cfg: AppConfig, log: LogPacker):
     """Initializes architect/engineer LLMs."""
 
     log.info("Initializing architect LLM (Architect)...")
-    llm_architect = ChatVertexAI(
+    llm_architect = ChatGoogleGenerativeAI(
         model=cfg.architect.model,
         project=cfg.architect.project,
         # location=cfg.architect.location,
@@ -296,7 +297,7 @@ def init_llms(cfg: AppConfig, log: LogPacker):
     )
 
     log.info("Initializing engineer LLM (Engineer)...")
-    llm_engineer = ChatVertexAI(
+    llm_engineer = ChatGoogleGenerativeAI(
         model=cfg.engineer.model,
         project=cfg.engineer.project,
         # location=cfg.engineer.location,
