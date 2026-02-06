@@ -675,7 +675,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     tools = init_file_management_tools(cfg, log)
     llm_architect, llm_engineer = init_llms(cfg, log)
     log.info("🏗️ [Next Step] Building the Agent Graph...")
-    app = build_graph(cfg, tools, llm_architect, llm_engineer, log)
+    app = build_graph(cfg, run_id,tools, llm_architect, llm_engineer, log)
     # app.get_graph().print_ascii()
     user_input = render_user_input(cfg)
     log.info("▶️ [Next Step] Starting multi-agent execution loop...")
