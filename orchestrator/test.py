@@ -79,9 +79,9 @@ def main() -> int:
 
     # Import tools from your existing module.
     # This import assumes `test_v2.py` sits in
-    # `orchestrator/` alongside `multi_agent_refactor.py`.
+    # `orchestrator/` alongside `sandbox.py`.
     try:
-        from muti_agent_refactor_sandbox import (
+        from sandbox import (
             create_sandbox,
             execute_command_in_sandbox,
             remove_sandbox,
@@ -111,29 +111,66 @@ def main() -> int:
 
         # Use python3; fall back to python3.12
         # if python3 isn't available.
-        cmd = r'python3 -c "print(\"hello world\")" ||\
-             python3.12 -c "print(\"hello world\")"'
-
-        print("[INFO] Executing hello-world command in sandbox...")
+        # cmd = r'python3 -c "print(\"hello world\")" ||\
+        #      python3.12 -c "print(\"hello world\")"'
+        # 查詢資料夾
+        cmd_search = r"ls /workspace/"
+        print("[INFO] Executing search command in sandbox...")
         raw = _invoke_tool(
             execute_command_in_sandbox,
             sandbox_id=sandbox_id,
-            command=cmd,
-            timeout_sec=120,
+            command=cmd_search,
+            timeout_sec=60,
+        )
+        search_resp = _load_tool_response(raw)
+        if not search_resp.get("ok") or int(search_resp.get("exit_code", 1)) != 0:
+            print(
+                f"[FAIL] execute_command_in_sandbox \nfailed \
+                : \n{search_resp}\nCommand: {cmd_search}",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"[PASS] Search stdout: {search_resp.get('stdout', '').strip()}")
+        fix_prefix = r"/workspace/project_1/stage_1/stage_plan/test_result/golden/"
+        cmd_execute_golden = rf"sh {fix_prefix}execute_golden.sh"
+        print("[INFO] Executing golden command in sandbox...")
+        raw = _invoke_tool(
+            execute_command_in_sandbox,
+            sandbox_id=sandbox_id,
+            command=cmd_execute_golden,
+            timeout_sec=600,
+        )
+        golden_resp = _load_tool_response(raw)
+        if not golden_resp.get("ok") or int(golden_resp.get("exit_code", 1)) != 0:
+            print(
+                f"[FAIL] execute_command_in_sandbox failed:\
+                      {golden_resp}\nCommand: {cmd_execute_golden}",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"[PASS] Golden stdout: {golden_resp.get('stdout', '').strip()}")
+        fix_prefix_test = r"/workspace/project_1/stage_1/stage_plan/test_result/test/"
+        cmd_execute = rf"sh {fix_prefix_test}execute_test.sh"
+
+        print("[INFO] Executing execute command in sandbox...")
+        raw = _invoke_tool(
+            execute_command_in_sandbox,
+            sandbox_id=sandbox_id,
+            command=cmd_execute,
+            timeout_sec=600,
         )
         exec_resp = _load_tool_response(raw)
 
         if not exec_resp.get("ok") or int(exec_resp.get("exit_code", 1)) != 0:
             print(
-                f"[FAIL] execute_command_in_sandbox failed: {exec_resp}",
+                f"[FAIL] execute_command_in_sandbox failed:\
+                      {exec_resp}\nCommand: {cmd_execute}",
                 file=sys.stderr,
             )
             return 1
 
+        print("[INFO] Executing execute command in sandbox...")
         stdout = str(exec_resp.get("stdout", ""))
-        if "hello world" not in stdout.lower():
-            print(f"[FAIL] Unexpected stdout: {stdout!r}", file=sys.stderr)
-            return 1
 
         print(f"[PASS] stdout: {stdout.strip()}")
         return 0

@@ -1,4 +1,18 @@
 services:
+  repo_ingestion:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    image: refactor-repo-ingestion:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      # Share the same named volume across services
+      - workspace:/app/workspace
+    environment:
+      PYTHONUNBUFFERED: "1"
+    restart: unless-stopped
+
   orchestrator:
     build:
       context: .
@@ -7,8 +21,8 @@ services:
     volumes:
       # Allow orchestrator to create sandbox containers (Docker-outside-of-Docker)
       - /var/run/docker.sock:/var/run/docker.sock
-      # Host workspace for repos/artifacts/logs
-      - /workspace:/workspace
+      # Share the same named volume across services
+      - workspace:/workspace
     environment:
       PYTHONUNBUFFERED: "1"
     restart: unless-stopped
@@ -19,3 +33,8 @@ services:
       dockerfile: docker/sandbox/Dockerfile
     image: refactor-sandbox:latest
     profiles: ["manual"]
+
+volumes:
+  workspace:
+    # Lock the actual Docker volume name to exactly "workspace"
+    name: workspace

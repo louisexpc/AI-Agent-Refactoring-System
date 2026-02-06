@@ -26,6 +26,7 @@ dependencies = [
     "tree-sitter-rust>=0.23.0",
     "tree-sitter-typescript>=0.23.0",
     "uvicorn>=0.40.0",
+    "docker>=7.1.0",
 ]
 
 # -------------------------
