@@ -9,6 +9,9 @@ from typing import Annotated, Mapping, Sequence, TypedDict
 
 import requests
 from dotenv import load_dotenv
+
+# NOTE: langchain.agents.create_agent (v1.2.9+) 已內建 tool loop，
+# 會自動處理 tool calls 直到 LLM 停止呼叫 tools
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_community.agent_toolkits import FileManagementToolkit
@@ -16,7 +19,9 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 # from langchain_google_vertexai import ChatVertexAI
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.graph import END, StateGraph
+
+# NOTE: 移除未使用的 StateGraph/END import，因為 create_agent 已經返回 compiled graph
+# 保留 add_messages 供 AgentState 使用
 from langgraph.graph.message import add_messages
 
 try:
@@ -24,6 +29,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Please install PyYAML: pip install pyyaml") from exc
 import sys
+
 
 def ensure_repo_root_on_path() -> Path:
     """確保 repo root 已加入 sys.path。
@@ -35,9 +41,11 @@ def ensure_repo_root_on_path() -> Path:
     if str(repo_root) not in sys.path:
         sys.path.append(str(repo_root))
     return repo_root
-ensure_repo_root_on_path()
 
-from runner.test_gen.pipeline_tool import generate_test
+
+ensure_repo_root_on_path()
+# ruff: noqa: F401
+from runner.test_gen.pipeline_tool import generate_test  # noqa
 
 # =========================
 # Token Estimation Logic
@@ -335,6 +343,7 @@ def init_file_management_tools(cfg: AppConfig, log: LogPacker):
     final_read_tool = original_read_tool
 
     if original_read_tool:
+
         @tool("read_file")
         def safe_read_wrapper(file_path: str) -> str:
             """
@@ -347,8 +356,11 @@ def init_file_management_tools(cfg: AppConfig, log: LogPacker):
                 target_path = (cfg.working_directory / file_path).resolve()
 
                 # 安全檢查
-                if not str(target_path).startswith(str(cfg.working_directory.resolve())):
-                    return f"Error: Access denied. Path {file_path} is outside the working directory."
+                if not str(target_path).startswith(
+                    str(cfg.working_directory.resolve())
+                ):
+                    return f"Error: Access denied. Path {file_path} \
+                    is outside the working directory."
 
                 if not target_path.exists():
                     return f"Error: File {file_path} does not exist."
@@ -360,9 +372,12 @@ def init_file_management_tools(cfg: AppConfig, log: LogPacker):
                 if est_tokens > MAX_TOKENS:
                     read_chars = MAX_TOKENS * 4
                     log.warning(
-                        f"🛡️ [SafeGuard] Intercepted large file: {file_path} (~{est_tokens} tokens). Truncating."
+                        f"🛡️ [SafeGuard] Intercepted large file:\
+                         {file_path} (~{est_tokens} tokens). Truncating."
                     )
-                    with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                    with open(
+                        target_path, "r", encoding="utf-8", errors="replace"
+                    ) as f:
                         preview = f.read(read_chars)
                     return (
                         f"{preview}\n\n"
@@ -391,6 +406,7 @@ def init_file_management_tools(cfg: AppConfig, log: LogPacker):
     final_write_tool = original_write_tool
 
     if original_write_tool:
+
         @tool("write_file")
         def write_log_wrapper(file_path: str, text: str) -> str:
             """
@@ -404,7 +420,9 @@ def init_file_management_tools(cfg: AppConfig, log: LogPacker):
             try:
                 # 呼叫原廠工具執行真正的寫入
                 # 注意: write_file 通常需要傳入字典參數
-                return original_write_tool.invoke({"file_path": file_path, "text": text})
+                return original_write_tool.invoke(
+                    {"file_path": file_path, "text": text}
+                )
             except Exception as e:
                 error_msg = f"Error writing file {file_path}: {e}"
                 log.error(f"❌ [Write File] Failed: {error_msg}")
@@ -418,13 +436,16 @@ def init_file_management_tools(cfg: AppConfig, log: LogPacker):
     final_tools = []
     for t in std_tools:
         if t.name == "read_file":
-            if final_read_tool: final_tools.append(final_read_tool)
+            if final_read_tool:
+                final_tools.append(final_read_tool)
         elif t.name == "write_file":
-            if final_write_tool: final_tools.append(final_write_tool)
+            if final_write_tool:
+                final_tools.append(final_write_tool)
         else:
             final_tools.append(t)
 
     return final_tools
+
 
 def init_llms(cfg: AppConfig, log: LogPacker):
     """Initializes architect/engineer LLMs."""
@@ -461,13 +482,27 @@ def init_llms(cfg: AppConfig, log: LogPacker):
 
 def build_graph(
     cfg: AppConfig,
-    run_id: str,
     tools,
     llm_architect: ChatGoogleGenerativeAI,
     llm_engineer: ChatGoogleGenerativeAI,
     log: LogPacker,
 ):
-    """Builds and compiles the LangGraph workflow."""
+    """Builds and compiles the LangGraph workflow.
+
+    架構說明：
+    - create_agent() 已內建 tool loop（會自動迭代執行 tool calls 直到 LLM 停止）
+    - Architect 是主要 agent，負責規劃和協調
+    - Engineer 透過 refactor_code tool 被 Architect 呼叫，執行實際重構
+    - generate_test tool 用於執行 characterization testing pipeline
+
+    工作流程：
+    1. Architect 讀取 dependency graph 和 codebase
+    2. Architect 建立 spec.md 規劃文件
+    3. Architect 呼叫 refactor_code() 委派重構任務給 Engineer
+    4. Engineer 使用 file tools 執行重構
+    5. Architect 呼叫 generate_test() 執行測試
+    6. 重複 3-5 直到所有 stage 完成
+    """
 
     architect_prompt_raw = load_prompt(cfg.prompts.architect_path)
     engineer_prompt_raw = load_prompt(cfg.prompts.engineer_path)
@@ -482,11 +517,12 @@ def build_graph(
     architect_system_prompt = architect_prompt_raw.format(
         # working_directory=str(cfg.working_directory).rstrip("/"),
         # repo_dir=cfg.repo_dir.lstrip("./"),
-
         # 如果需要 source_dir 或 repo_dir 也可以加進來
-        source_dir=run_id,
+        source_dir=cfg.source_dir,
     )
 
+    # NOTE: Engineer agent - create_agent 返回的是已編譯的 graph，
+    # 內部已處理 tool loop（LLM → tool call → tool result → LLM → ...）
     llm_engineer_with_tools = create_agent(
         llm_engineer,
         tools=tools,
@@ -507,47 +543,46 @@ def build_graph(
         (e.g., 'refactor code in the ./python to JAVA')
         """
         log.info(
-            f"➡️ [Next Step] Architect is delegating\
-            task to Engineer. Request: {request[:50]}..."
+            f"➡️ [Next Step] Architect is delegating "
+            f"task to Engineer. Request: {request[:100]}..."
         )
+
+        # NOTE: config 應作為 invoke() 的第二個參數，不是 input dict 的一部分
+        # recursion_limit 控制最大迭代次數（防止無限 loop）
         result = llm_engineer_with_tools.invoke(
-            {
-                "messages": [HumanMessage(content=request)],
-                "config": {"recursion_limit": 100},
-            }
+            {"messages": [HumanMessage(content=request)]},
+            {"recursion_limit": 100},
         )
 
         log.info(
             "⬅️ [Next Step] Engineer finished task. Returning result to Architect..."
         )
-        return str(result["messages"][-1].content)
 
+        # 返回 Engineer 的最終回覆（tool loop 結束後的 AI message）
+        final_message = result["messages"][-1]
+        return str(final_message.content)
+
+    # NOTE: Architect agent 擁有：
+    # - file tools (read_file, write_file, list_directory, etc.)
+    # - refactor_code: 委派重構任務給 Engineer
+    # - generate_test: 執行 characterization testing pipeline
     llm_architect_with_tools = create_agent(
         llm_architect,
         tools=tools + [refactor_code, generate_test],
         system_prompt=architect_system_prompt,
     )
 
-    def architect_node(state: AgentState):
-        """Architect node: produces a step-by-step plan (no tool calls)."""
-        log.info(
-            "🧠 [Next Step] Architect is thinking/planning based on current state..."
-        )
-        messages = state["messages"]
-        response = llm_architect_with_tools.invoke(
-            {"messages": messages},  # 這是 Input
-            {"recursion_limit": 100},  # 這是 Config
-        )
-        print(response)
-        return {"messages": [response["messages"][-1]]}
+    log.info(
+        "Compiling LangGraph workflow (using create_agent with built-in tool loop)..."
+    )
 
-    workflow = StateGraph(AgentState)
-    workflow.add_node("architect", architect_node)
-    workflow.set_entry_point("architect")
-    workflow.add_edge("architect", END)
-
-    log.info("Compiling LangGraph workflow...")
-    return workflow.compile()
+    # NOTE: 直接返回 architect agent graph
+    # create_agent 已經是完整的 compiled graph，包含：
+    # - agent node: 呼叫 LLM
+    # - tools node: 執行 tool calls
+    # - conditional edge: 判斷是否繼續 loop
+    # 不需要再用 StateGraph 包裝
+    return llm_architect_with_tools
 
 
 # =========================
@@ -574,50 +609,87 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def stream_pretty(app, user_input: str, log: LogPacker) -> None:
     """Streams the graph execution with basic formatting.
 
-    Note:
-        This workflow calls the Architect exactly once at the start. All later
-        AI messages come from the Engineer (potentially across multiple tool
-        iterations). We use that invariant for simple role labeling.
+    NOTE: 使用 create_agent 後，所有 AI messages 都來自 Architect agent。
+    當 Architect 呼叫 refactor_code tool 時，Engineer 的執行是同步的，
+    其輸出會作為 tool result 返回，不會產生獨立的 AI message。
+
+    訊息流程：
+    1. AI (Architect) - 可能包含 tool_calls
+    2. Tool - tool 執行結果（包含 refactor_code/generate_test 的輸出）
+    3. AI (Architect) - 處理 tool 結果，可能繼續呼叫 tools
+    4. ... 重複直到 Architect 不再呼叫 tools
 
     Args:
-        app: Compiled LangGraph application.
+        app: Compiled LangGraph application (from create_agent).
         user_input: User request prompt content.
         log: Logger wrapper.
     """
 
     inputs = {"messages": [HumanMessage(content=user_input)]}
 
-    seen_architect = False
     log.info(
         "🚀 [Next Step] Injecting user input into the Graph and starting execution..."
     )
 
-    for event in app.stream(inputs, stream_mode="values"):
+    # NOTE: 追蹤迭代次數，用於 debug
+    iteration_count = 0
+
+    for event in app.stream(inputs, {"recursion_limit": 100}, stream_mode="values"):
+        iteration_count += 1
         last_msg = event["messages"][-1]
 
         if last_msg.type == "ai":
-            if not seen_architect:
-                role = "Architect"
-                seen_architect = True
-            else:
-                role = "Engineer"
-            # [NEW LOG] 判斷 AI 接下來要幹嘛
+            # NOTE: 所有 AI messages 都來自 Architect（Engineer 透過 tool 執行）
+            role = "Architect"
+
             if getattr(last_msg, "tool_calls", None):
                 tool_names = [t.get("name", "") for t in last_msg.tool_calls]
-                log.info(f"🛠️ [Next Step] {role} intends to execute tools: {tool_names}")
+                log.info(
+                    f"🛠️ [Iteration {iteration_count}]\
+                    {role} calling tools: {tool_names}"
+                )
+
+                # 特別標記委派給 Engineer 的情況
+                if "refactor_code" in tool_names:
+                    log.info("   ↳ Delegating refactoring task to Engineer...")
+                if "generate_test" in tool_names:
+                    log.info("   ↳ Triggering characterization testing pipeline...")
             else:
-                log.info(f"💬 [Next Step] {role} is generating a response/plan...")
-            log.info(f"[{role}] {last_msg.content}")
-            if getattr(last_msg, "tool_calls", None):
-                tool_names = [t.get("name", "") for t in last_msg.tool_calls]
-                log.info(f"[Engineer] tool_calls={tool_names}")
+                log.info(f"💬 [Iteration {iteration_count}] {role} responding...")
+
+            # 輸出 AI 訊息內容(截斷過長內容)
+            content = str(last_msg.content)
+            if len(content) > 500:
+                log.info(
+                    f"[{role}] {content[:500]}... \
+                    (truncated, total {len(content)} chars)"
+                )
+            else:
+                log.info(f"[{role}] {content}")
 
         elif last_msg.type == "tool":
-            # Tool output may be huge; record length only.
+            # Tool 執行結果
+            tool_name = getattr(last_msg, "name", "unknown")
+            content_len = len(str(last_msg.content))
+
             log.info(
-                "✅ [Next Step] Tool execution completed. Returning output to Agent..."
+                f"✅ [Iteration {iteration_count}] Tool '{tool_name}' completed. "
+                f"Output length: {content_len} chars"
             )
-            log.info(f"[Tool] returned_len={len(str(last_msg.content))}")
+
+            # 對於重要 tools，輸出更多細節
+            if tool_name in ("refactor_code", "generate_test"):
+                content = str(last_msg.content)
+                if len(content) > 300:
+                    log.info(f"   ↳ Result preview: {content[:300]}...")
+                else:
+                    log.info(f"   ↳ Result: {content}")
+
+        elif last_msg.type == "human":
+            # 初始 user input（通常只有第一次）
+            log.info(f"👤 [Iteration {iteration_count}] User input received")
+
+    log.info(f"🏁 Graph execution completed after {iteration_count} iterations")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -643,7 +715,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         },
     )
 
-
     # 設定 API 端點網址
     ingest_url = cfg.ingest_url
 
@@ -658,24 +729,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         # 發送 POST 請求
         # 使用 json= 參數會自動將字典轉換為 JSON 字串，並加上正確的 Header
+        log.info(f"📡 [Ingestion] Sending request to {ingest_url}...")
         response = requests.post(ingest_url, json=data)
 
         # 檢查請求是否成功 (狀態碼為 2xx)
         response.raise_for_status()
 
         # 輸出回傳結果
-        print("狀態碼:", response.status_code)
-        print("回傳內容:", response.json())
-        run_id = response.json().get("run_id")
-        log.info(f"📥 [Next Step] Repository ingestion started. run_id={run_id}")
+        log.info(f"✅ [Ingestion] Success - Status: {response.status_code}")
+        log.json("ingestion_response", response.json())
+
     except requests.exceptions.RequestException as e:
-        print(f"發送請求時發生錯誤: {e}")
+        # NOTE: Ingestion 失敗是 critical error，workspace 未初始化
+        # 後續的 file operations 會失敗，因此應該中止執行
+        log.error(f"❌ [Ingestion] Failed: {e}")
+        log.error("Aborting workflow - workspace not initialized")
+        return 1
 
     log.info("🧰 [Next Step] Initializing file management tools & LLMs...")
     tools = init_file_management_tools(cfg, log)
     llm_architect, llm_engineer = init_llms(cfg, log)
     log.info("🏗️ [Next Step] Building the Agent Graph...")
-    app = build_graph(cfg, run_id,tools, llm_architect, llm_engineer, log)
+    app = build_graph(cfg, tools, llm_architect, llm_engineer, log)
     # app.get_graph().print_ascii()
     user_input = render_user_input(cfg)
     log.info("▶️ [Next Step] Starting multi-agent execution loop...")
