@@ -1,11 +1,33 @@
 [project]
 name = "tsmc-2026-hackathon"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
+    "grandalf>=0.8",
+    "langchain-community>=0.4.1",
+    "langchain-google-genai>=4.2.0",
+    "langchain-google-vertexai>=3.2.2",
+    "langgraph>=1.0.7",
+    "fastapi>=0.116.1",
     "mypy>=1.19.1",
+    "pathspec>=0.12.1",
+    "pydantic>=2.11.7",
     "pre-commit>=4.5.1",
     "ruff>=0.14.14",
+    "tree-sitter>=0.25.0,<0.26",
+    "tree-sitter-c>=0.23.0,<0.25",
+    "tree-sitter-c-sharp>=0.23.0,<0.25",
+    "tree-sitter-cpp>=0.23.0,<0.25",
+    "tree-sitter-go>=0.23.0,<0.25",
+    "tree-sitter-java>=0.23.0,<0.25",
+    "tree-sitter-javascript>=0.23.0,<0.25",
+    "tree-sitter-python>=0.23.0,<0.25",
+    "tree-sitter-ruby>=0.23.0,<0.25",
+    "tree-sitter-rust>=0.23.0,<0.25",
+    "tree-sitter-typescript>=0.23.0,<0.25",
+    "uvicorn>=0.40.0",
+    "docker>=7.1.0",
+    "langchain>=1.2.8",
 ]
 
 # -------------------------

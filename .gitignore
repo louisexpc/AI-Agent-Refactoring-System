@@ -2,10 +2,24 @@
 __pycache__/
 *.pyc
 .env
-.venv/*
+.venv/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+.coverage.*
 # Build
 dist/
 build/
+.github
 
 # OS
 .DS_Store
+*.zip
+
+#RepoIngestion
+artifacts/
+workspace/
+*.log
+*.json
+/.github/
