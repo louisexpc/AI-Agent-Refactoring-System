@@ -13,7 +13,7 @@ llm:
     temperature: 0
   engineer:
     model: "gemini-2.5-pro"
-    project: "tsmchaker"
+    project: "tsmccareerhack2026-tsid-grp3"
     location: "global"
     temperature: 0
 

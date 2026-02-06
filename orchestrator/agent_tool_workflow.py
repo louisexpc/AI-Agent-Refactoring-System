@@ -23,6 +23,21 @@ try:
     import yaml
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Please install PyYAML: pip install pyyaml") from exc
+import sys
+
+def ensure_repo_root_on_path() -> Path:
+    """確保 repo root 已加入 sys.path。
+
+    Returns:
+        repo root 路徑。
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.append(str(repo_root))
+    return repo_root
+ensure_repo_root_on_path()
+
+from runner.test_gen.pipeline_tool import generate_test
 
 # =========================
 # Token Estimation Logic
@@ -466,7 +481,8 @@ def build_graph(
     architect_system_prompt = architect_prompt_raw.format(
         # working_directory=str(cfg.working_directory).rstrip("/"),
         # repo_dir=cfg.repo_dir.lstrip("./"),
-        # 如果需要 source_dir 或 repo_dir 也可以加進來``
+
+        # 如果需要 source_dir 或 repo_dir 也可以加進來
         source_dir=cfg.source_dir,
     )
 
@@ -507,7 +523,7 @@ def build_graph(
 
     llm_architect_with_tools = create_agent(
         llm_architect,
-        tools=tools + [refactor_code],
+        tools=tools + [refactor_code, generate_test],
         system_prompt=architect_system_prompt,
     )
 
@@ -625,9 +641,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
         },
     )
-    log.info(
-        f"📡 [Next Step] Sending repository ingestion request to {cfg.ingest_url}..."
-    )
+
 
     # 設定 API 端點網址
     ingest_url = cfg.ingest_url
