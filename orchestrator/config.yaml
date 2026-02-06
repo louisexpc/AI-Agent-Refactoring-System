@@ -1,19 +1,19 @@
 # multi_agent orchestrator config (MVP)
 # 以 config.yaml 所在資料夾 orchestrator/ 當 base，
 # ".." 會 resolve 成 repo root/
-working_directory: ".."
+working_directory: "/workspace"
 ingest_url: "http://repo_ingestion:8000/ingestion/runs"
 repo_url: "https://github.com/emilybache/Racing-Car-Katas.git"
 
 llm:
   architect:
     model: "gemini-2.5-pro"
-    project: "tsmchaker"
+    project: "tsmccareerhack2026-tsid-grp3"
     location: "global"
     temperature: 0
   engineer:
-    model: "gemini-2.5-pro"
-    project: "tsmchaker"
+    model: "openai/gpt-oss-20b-maas"
+    project: "tsmccareerhack2026-tsid-grp3"
     location: "global"
     temperature: 0
 
@@ -32,14 +32,14 @@ target_dir: "refactor_repo"
 user_input_template: >
   # Task: Multi-Stage Refactoring from Python to Go
 
-  Refactor the Python code file under the `{working_directory}/workspace/init/{source_dir}/snapshot/repo` folder into Go.
+  Refactor the Python code file under the `/workspace/init/{source_dir}/snapshot/repo` folder into Go.
   ## Phase 1: Initial Analysis & Specification
   Before performing any planning or modification tasks, you MUST first read and reason over two JSON files
-  1. `{working_directory}/workspace/init/{source_dir}/depgraph/dep_graph_light.json`
-  2. `{working_directory}/workspace/init/{source_dir}/depgraph/dep_reverse_index_light.json`
+  1. `/workspace/init/{source_dir}/depgraph/dep_graph_light.json`
+  2. `/workspace/init/{source_dir}/depgraph/dep_reverse_index_light.json`
  
 
-  Analyze the project structure and dependencies to generate a `spec.md` in the `{working_directory}/workspace/init/plan` directory.
+  Analyze the project structure and dependencies to generate a `spec.md` in the `/workspace/init/plan` directory.
   
   ## Phase 2: Execution via Subagent (Stage-by-Stage)
   Call the refactor tool  to perform the refactoring in sequential stages. For every new stage (Stage X), the tool MUST follow this protocol before modifying any code:
