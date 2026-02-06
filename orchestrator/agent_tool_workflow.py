@@ -412,7 +412,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=str,
-        default="config.yaml",
+        default="/app/orchestrator/config.yaml",
         help="Path to YAML config (default: config.yaml)",
     )
     return parser.parse_args(argv)
