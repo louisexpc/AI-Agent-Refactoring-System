@@ -34,13 +34,21 @@ user_input_template: >
 
   Refactor the Python code file under the `/workspace/init/{source_dir}/snapshot/repo` folder into Go.
   ## Phase 1: Initial Analysis & Specification
-  Before performing any planning or modification tasks, you MUST first read and reason over two JSON files
-  1. `/workspace/init/{source_dir}/depgraph/dep_graph_light.json`
-  2. `/workspace/init/{source_dir}/depgraph/dep_reverse_index_light.json`
- 
+  Before performing any planning or modification tasks, you MUST first read and reason over the following data sources in order:
 
-  Analyze the project structure and dependencies to generate a `spec.md` in the `/workspace/init/plan` directory.
-  
+  1. **Dependency Graphs:**
+     - Read `/workspace/init/{source_dir}/depgraph/dep_graph_light.json`
+     - Read `/workspace/init/{source_dir}/depgraph/dep_reverse_index_light.json`
+
+  2. **Source Code Retrieval:**
+     - Target Directory: `/workspace/init/{source_dir}/snapshot/repo/`
+     - **Action 1:** Use `list_directory` to list all files in this directory.
+     - **Action 2:** Identify all files ending with `.py`.
+     - **Action 3:** Use `read_file` to read the content of every identified Python file.
+
+  3. **Analysis Output:**
+     - **Analyze the project structure and dependencies to generate a `spec.md` in the `/workspace/init/plan` directory.**
+
   ## Phase 2: Execution via Subagent (Stage-by-Stage)
   Call the refactor tool  to perform the refactoring in sequential stages. For every new stage (Stage X), the tool MUST follow this protocol before modifying any code:
 

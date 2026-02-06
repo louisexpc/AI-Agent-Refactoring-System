@@ -28,7 +28,7 @@ The user prefers grouping by "Functional Clusters" rather than "Call Hierarchy L
 3. **Staging Plan**:
 - **Stage ID**: (e.g., Auth Module, Order Processing, Data Export)
 - **Included Files**: List of paths.
-- **Rationale**: Why these files belong together (e.g., "All belong to the user-management 
+- **Rationale**: Why these files belong together (e.g., "All belong to the user-management
 sub-folder").
 
 - **Interface Points**: How this cluster interacts with the rest of the system.
