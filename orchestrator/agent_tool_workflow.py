@@ -265,7 +265,6 @@ def render_user_input(cfg: AppConfig) -> str:
     """Renders the user input prompt from template + YAML parameters."""
 
     return cfg.user_input_template.format(
-        working_directory=str(cfg.working_directory).rstrip("/"),
         source_dir=cfg.source_dir.lstrip("./"),
         target_dir=cfg.target_dir.lstrip("./"),
         repo_dir=cfg.repo_dir.lstrip("./"),
@@ -331,14 +330,14 @@ def build_graph(
     engineer_prompt_raw = load_prompt(cfg.prompts.engineer_path)
 
     engineer_system_prompt = engineer_prompt_raw.format(
-        working_directory=str(cfg.working_directory).rstrip("/"),
+        # working_directory=str(cfg.working_directory).rstrip("/"),
         target_dir=cfg.target_dir.lstrip("./"),
         # 如果需要 source_dir 或 repo_dir 也可以加進來
         # source_dir=cfg.source_dir,
     )
 
     architect_system_prompt = architect_prompt_raw.format(
-        working_directory=str(cfg.working_directory).rstrip("/"),
+        # working_directory=str(cfg.working_directory).rstrip("/"),
         # repo_dir=cfg.repo_dir.lstrip("./"),
         
         # 如果需要 source_dir 或 repo_dir 也可以加進來
