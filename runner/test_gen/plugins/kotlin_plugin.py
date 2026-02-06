@@ -44,6 +44,19 @@ Testing guidance:
 - Mock recommendations: {mock_recommendations}
 - Nondeterminism notes: {nondeterminism_notes}
 
+Context (if converting from NodeJS/JavaScript):
+- JS dynamic types → Kotlin static types (String, Int, List<T>, etc.)
+- JS null/undefined → Kotlin nullable types (T?)
+- JS callbacks/promises → Kotlin coroutines (suspend fun) or blocking calls
+- JS object literals → Kotlin data classes
+- MongoDB documents → PostgreSQL tables with proper schema
+
+For database operations:
+- Use JDBC with raw SQL queries (no ORM abstractions)
+- Capture query results as structured data
+- Test CRUD operations: INSERT, SELECT, UPDATE, DELETE
+- Verify transaction behavior if applicable
+
 Requirements:
 - Use Kotlin `import` to import the source classes/functions
 - The script must have a `main` function
@@ -75,19 +88,40 @@ Testing guidance:
 Golden output (expected behavior from the original code):
 {golden_output}
 
+Kotlin-specific considerations (if refactored from NodeJS):
+- Verify null safety: nullable types should be handled properly
+- Test data class equality (equals/hashCode)
+- For suspend functions: use runBlocking in tests
+- Verify type conversions are accurate (JS dynamic → Kotlin static)
+
+Database testing (PostgreSQL with RAW SQL):
+- Use JDBC directly: DriverManager.getConnection(...)
+- Write explicit SQL queries (SELECT, INSERT, UPDATE, DELETE)
+- Use @BeforeEach to set up test data, @AfterEach to clean up
+- Test transaction commit/rollback behavior
+- Verify foreign key constraints and data integrity
+- Example pattern:
+  ```
+  val conn = DriverManager.getConnection(jdbcUrl, user, password)
+  val stmt = conn.prepareStatement("SELECT * FROM users WHERE id = ?")
+  stmt.setInt(1, userId)
+  val rs = stmt.executeQuery()
+  ```
+
 Requirements:
 1. For each golden output key, find the corresponding function/class in the new code
    and assert it produces the same value
 2. Use Kotlin `import` to import the source classes
-3. Use JUnit5 assertions (assertEquals, assertTrue, etc.)
+3. Use JUnit5 assertions (assertEquals, assertTrue, assertNotNull, etc.)
 4. For mocking, use MockK or manual mocks
-5. Mock any side effects (file I/O, network, DB) as indicated in guidance
+5. Mock any side effects (file I/O, network) as indicated in guidance
 6. For database operations, use JDBC with raw SQL to verify state
 7. If a golden key has no corresponding function in the new code, skip it with
    a comment explaining why
 8. Do NOT include markdown code fences, return raw Kotlin code only
 9. The test file must be runnable with `gradle test`
 10. Use @Test annotation for each test method
+11. Use @BeforeEach/@AfterEach for database setup/teardown
 """
 
 
@@ -586,10 +620,36 @@ application {
         repo_dir_str = to_sandbox_path(repo_dir)
         output_dir_str = to_sandbox_path(output_dir)
 
+        # 偵測 SQL fixture（用於 DB 初始化）
+        db_init_script = ""
+        sql_fixtures = list(repo_dir.glob("test_data/*.sql"))
+        if not sql_fixtures:
+            sql_fixtures = list(repo_dir.glob("*.sql"))
+        if sql_fixtures:
+            sql_file = sql_fixtures[0]
+            sql_path = to_sandbox_path(sql_file)
+            db_name = sql_file.stem
+            db_init_script = f"""
+# ========== DB Setup (auto-detected) ==========
+if command -v psql &> /dev/null; then
+    echo "Setting up PostgreSQL database..."
+    psql -U postgres -c "DROP DATABASE IF EXISTS {db_name};" 2>/dev/null || true
+    psql -U postgres -c "CREATE DATABASE {db_name};" 2>/dev/null || true
+    psql -U postgres -d {db_name} -f {sql_path} 2>/dev/null || true
+    echo "Database {db_name} initialized from {sql_file.name}"
+elif command -v mysql &> /dev/null; then
+    echo "Setting up MySQL database..."
+    mysql -u root -e "DROP DATABASE IF EXISTS {db_name}; CREATE DATABASE {db_name};"
+    mysql -u root {db_name} < {sql_path}
+    echo "Database {db_name} initialized from {sql_file.name}"
+fi
+# ==============================================
+"""
+
         if script_path:
             return f"""#!/bin/bash
 set -e
-
+{db_init_script}
 # Paths
 REPO_DIR="{repo_dir_str}"
 OUTPUT_DIR="{output_dir_str}"
@@ -616,6 +676,7 @@ fi
         elif test_file_path:
             return f"""#!/bin/bash
 set -e
+{db_init_script}
 
 # Paths
 REPO_DIR="{repo_dir_str}"

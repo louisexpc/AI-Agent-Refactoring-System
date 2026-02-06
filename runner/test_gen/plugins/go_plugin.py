@@ -518,7 +518,28 @@ class GoPlugin(LanguagePlugin):
             shutil.copy2(go_mod_src, go_mod_dst)
             artifacts["requirements"] = go_mod_dst
 
-        # 2. 生成 execution.sh
+        # 2. 偵測 SQL fixture（用於 DB 初始化）
+        db_init_script = ""
+        sql_fixtures = list(repo_dir.glob("test_data/*.sql"))
+        if not sql_fixtures:
+            sql_fixtures = list(repo_dir.glob("*.sql"))
+        if sql_fixtures:
+            # 使用第一個找到的 SQL 檔案
+            sql_file = sql_fixtures[0]
+            sql_path = to_sandbox_path(sql_file)
+            db_name = sql_file.stem  # e.g., full_dump -> full_dump
+            db_init_script = f"""
+# ========== DB Setup (auto-detected) ==========
+if command -v mysql &> /dev/null; then
+    echo "Setting up MySQL database..."
+    mysql -u root -e "DROP DATABASE IF EXISTS {db_name}; CREATE DATABASE {db_name};"
+    mysql -u root {db_name} < {sql_path}
+    echo "Database {db_name} initialized from {sql_file.name}"
+fi
+# ==============================================
+"""
+
+        # 3. 生成 execution.sh
         repo_dir_path = to_sandbox_path(repo_dir)
 
         if script_path:  # Golden script (Go 不常用 script，但支援)
@@ -526,6 +547,7 @@ class GoPlugin(LanguagePlugin):
             script_path_str = to_sandbox_path(script_path)
             sh_content = f"""#!/bin/bash
 set -e
+{db_init_script}
 cd {repo_dir_path}
 go run {script_path_str}
 """
@@ -542,6 +564,7 @@ go run {script_path_str}
             test_target_dir_str = to_sandbox_path(test_target_dir)
             sh_content = f"""#!/bin/bash
 set -e
+{db_init_script}
 # Copy test file to source directory (Go requires test to be with source)
 cp {test_file_path_str} {test_target_dir_str}/{test_filename}
 cd {test_target_dir_str}

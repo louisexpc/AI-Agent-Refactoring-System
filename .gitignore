@@ -17,4 +17,5 @@ build/
 *.zip
 
 #RepoIngestion
-artifacts/
+workspace/
+*.json

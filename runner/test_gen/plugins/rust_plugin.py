@@ -44,6 +44,19 @@ Testing guidance:
 - Mock recommendations: {mock_recommendations}
 - Nondeterminism notes: {nondeterminism_notes}
 
+Context (if converting from C):
+- C pointers → Rust references (&T, &mut T) or Box<T>
+- C malloc/free → Rust ownership (automatic memory management)
+- C null checks → Rust Option<T> or Result<T, E>
+- C error codes → Rust Result<T, E> with proper error types
+- C global state → Rust modules with controlled access
+
+For CLI tools (parsers, processors):
+- Test with various input sizes (empty, small, large)
+- Capture both stdout and stderr behavior
+- Test command-line argument parsing if applicable
+- For XML/JSON parsers: test well-formed and malformed input
+
 Requirements:
 - Create a main() function that calls the functions from the source
 - Use `mod` or `use` to import the source module
@@ -73,17 +86,30 @@ Testing guidance:
 Golden output (expected behavior from the original code):
 {golden_output}
 
+Rust-specific considerations (if refactored from C):
+- Use Result<T, E> for functions that may fail (not panic!)
+- Use Option<T> for nullable values
+- Verify ownership semantics: borrowed vs owned data
+- Test error paths explicitly (expect Err results)
+- For unsafe blocks: verify memory safety invariants
+
+For CLI/parser tools:
+- Test edge cases: empty input, malformed input, large input
+- Verify error messages match expected format
+- Test both success and failure exit paths
+
 Requirements:
 1. Create a test module with #[cfg(test)] mod tests
 2. Use #[test] attribute for each test function
 3. Use assert_eq!, assert!, or custom assertions
 4. Test function names: test_<name> following Rust conventions
-5. For floating point comparisons, use approximate equality
+5. For floating point comparisons, use approximate equality (f64::EPSILON)
 6. Use mockall or manual mocks for side effects if needed
 7. If a golden key has no corresponding function, skip with comment
 8. No markdown code fences, return raw Rust code only
 9. Runnable with: cargo test
 10. Import necessary items with `use super::*;` or specific imports
+11. For Result types: test both Ok and Err variants
 """
 
 

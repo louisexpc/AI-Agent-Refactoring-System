@@ -29,6 +29,8 @@ except ImportError:
     SANDBOX_AVAILABLE = False
     sandbox = None  # type: ignore
 
+import re
+
 from runner.test_gen.main import (
     generate_stage1_golden,
     generate_stage3_tests,
@@ -473,13 +475,16 @@ def _process_single_mapping(
                 failure_reasons = _parse_failure_reasons(stdout)
                 test_items = _parse_pytest_verbose_items(stdout, failure_reasons)
 
+                # 解析 coverage
+                coverage_pct = _parse_coverage_from_stdout(stdout, target_language)
+
                 test_result = UnitTestResult(
                     test_file=str(test_file_path),
                     total=passed + failed + errored,
                     passed=passed,
                     failed=failed,
                     errored=errored,
-                    coverage_pct=None,  # TODO: 從 coverage report 解析
+                    coverage_pct=coverage_pct,
                     stdout=stdout[-2000:] if stdout else None,
                     stderr=stderr[-1000:] if stderr else None,
                     exit_code=exit_code,
@@ -529,6 +534,58 @@ def _process_single_mapping(
 # =========================
 # Helper Functions
 # =========================
+
+
+def _parse_coverage_from_stdout(stdout: str, language: str) -> float | None:
+    """從測試輸出解析 coverage 百分比。
+
+    Args:
+        stdout: 測試的標準輸出。
+        language: 目標語言 (go, python, rust, kotlin, etc.)。
+
+    Returns:
+        Coverage 百分比，或 None（解析失敗時）。
+    """
+    if not stdout:
+        return None
+
+    if language == "go":
+        # Go: "coverage: 85.7% of statements"
+        match = re.search(r"coverage:\s+([\d.]+)%", stdout)
+        if match:
+            return float(match.group(1))
+    elif language == "python":
+        # pytest-cov: "TOTAL ... 85%"  or "Coverage: 85.7%"
+        match = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+)%", stdout)
+        if match:
+            return float(match.group(1))
+        match = re.search(r"[Cc]overage[:\s]+(\d+(?:\.\d+)?)%", stdout)
+        if match:
+            return float(match.group(1))
+    elif language == "rust":
+        # cargo-tarpaulin: "85.71% coverage, 120/140 lines covered"
+        match = re.search(r"([\d.]+)%\s+coverage", stdout)
+        if match:
+            return float(match.group(1))
+        # Alternative format: "Coverage: 85.7%"
+        match = re.search(r"[Cc]overage[:\s]+([\d.]+)%", stdout)
+        if match:
+            return float(match.group(1))
+    elif language == "kotlin":
+        # JaCoCo via Gradle: "Total coverage: 85.7%" or from XML report
+        match = re.search(r"[Tt]otal\s+[Cc]overage[:\s]+([\d.]+)%", stdout)
+        if match:
+            return float(match.group(1))
+        # Gradle format: "Coverage: 85.7%"
+        match = re.search(r"[Cc]overage[:\s]+([\d.]+)%", stdout)
+        if match:
+            return float(match.group(1))
+        # Line coverage format: "Line coverage: 85.7%"
+        match = re.search(r"[Ll]ine\s+[Cc]overage[:\s]+([\d.]+)%", stdout)
+        if match:
+            return float(match.group(1))
+
+    return None
 
 
 def _parse_golden_output_from_stdout(stdout: str) -> dict | None:
