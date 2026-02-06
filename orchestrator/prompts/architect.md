@@ -27,7 +27,7 @@ You have access to the following tools:
        "source_language": "python",
        "target_language": "go",
        "mappings": [
-         {"before": ["/path/to/old/file.py"], "after": ["/path/to/new/file.go"]}
+         {{"before": ["/path/to/old/file.py"], "after": ["/path/to/new/file.go"]}}
        ]
      }}
      ```
