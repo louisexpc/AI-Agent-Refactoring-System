@@ -24,9 +24,13 @@ from shared.ingestion_types import (
 )
 
 try:
-    # tree-sitter 0.20/0.21 has API differences across platforms and packages.
-    # We normalize capture tuples and keep best-effort behavior when parsing fails.
-    from tree_sitter import Language, Parser, Query, QueryCursor
+    # tree-sitter bindings changed across versions; QueryCursor may be absent.
+    from tree_sitter import Language, Parser, Query
+
+    try:  # pragma: no cover - optional in newer tree-sitter
+        from tree_sitter import QueryCursor
+    except ImportError:  # pragma: no cover
+        QueryCursor = None
 except ImportError:  # pragma: no cover
     Language = None
     Parser = None
@@ -172,6 +176,8 @@ class DepGraphExtractor:
             )
             if not lang:
                 continue
+            if lang == "markdown":
+                continue
             raw_edges = self._extract_edges(entry.path, lang, errors_path)
             for raw_edge in raw_edges:
                 dep_edge = _normalize_edge(
@@ -258,8 +264,11 @@ class DepGraphExtractor:
 
         try:
             query = Query(parser.language, query_text)
-            cursor = QueryCursor(query)
-            captures = cursor.captures(tree.root_node)
+            if QueryCursor is not None:
+                cursor = QueryCursor(query)
+                captures = cursor.captures(tree.root_node)
+            else:
+                captures = query.captures(tree.root_node)
         except Exception as exc:  # pragma: no cover
             _write_error(errors_path, rel_path, lang, f"query error: {exc}")
             return _regex_fallback(
@@ -348,7 +357,7 @@ def _get_language(lang: str):
 
 def _probe_tree_sitter() -> None:
     global _TREE_SITTER_READY, _TREE_SITTER_ERROR
-    if Parser is None or Language is None or Query is None or QueryCursor is None:
+    if Parser is None or Language is None or Query is None:
         _TREE_SITTER_READY = False
         _TREE_SITTER_ERROR = "tree-sitter not available"
         return
@@ -486,6 +495,23 @@ def _extract_js_edges(
     return raw_edges
 
 
+def _clean_include_path(raw_text: str, line_text: str = "") -> str:
+    if line_text:
+        match = re.search(r'^\s*#\s*include\s*[<"]([^">\n]+)[">]', line_text)
+        if match:
+            return match.group(1).strip()
+    match = re.search(r'[<"]([^">\n]+)[">]', raw_text)
+    if match:
+        return match.group(1).strip()
+    candidate = raw_text.splitlines()[0] if raw_text else ""
+    candidate = candidate.strip().strip("\"'<> ")
+    for sep in (">", '"', "'", " ", "\t"):
+        if sep in candidate:
+            candidate = candidate.split(sep, 1)[0]
+            break
+    return candidate.strip()
+
+
 def _extract_generic_edges(
     rel_path: str,
     lang: str,
@@ -501,8 +527,12 @@ def _extract_generic_edges(
         ref_kind = DepRefKind.USE
 
     for node, _name in _iter_captures(captures):
-        dst_raw = text[node.start_byte : node.end_byte]
-        dst_raw = dst_raw.strip().strip("\"'<> ")
+        raw_text = text[node.start_byte : node.end_byte]
+        if lang in {"c", "cpp"}:
+            line_text = _line_text(text, node.start_point[0])
+            dst_raw = _clean_include_path(raw_text, line_text)
+        else:
+            dst_raw = raw_text.strip().strip("\"'<> ")
         if not dst_raw:
             continue
         raw_edges.append(
