@@ -50,13 +50,19 @@ user_input_template: >
      - **Analyze the project structure and dependencies to generate a `spec.md` in the `/workspace/init/plan` directory.**
 
   ## Phase 2: Execution via Subagent (Stage-by-Stage)
-  Call the refactor tool  to perform the refactoring in sequential stages. For every new stage (Stage X), the tool MUST follow this protocol before modifying any code:
+  Call the refactor tool and generate test tool to perform the refactoring and testing in sequential stages. For every new stage (Stage X) or new run, the tool MUST follow this protocol before modifying any code:
 
-  1. **Information Gathering:** Read the current target Python code, the project `spec.md`, and the "Stage Output Report" from the previous stage (if applicable).
+  1. **Information Gathering:** Read the current target Python code, the project `spec.md`, and the "Stage Unit test Output Report" from the previous run (if applicable).
   2. **Detailed Planning:** Generate a detailed execution plan.
   3. **Module Mapping:** Generate a JSON file for the current stage .
   4. **Implementation:** Proceed with the code modifications only after the planning artifacts are created.
-  5. **IMPORTANT:** Do the next stage until all stages are complete
+  5. **Unit Testing:** After code modification, run unit tests to ensure correctness. If tests fail, analyze the failure and update the plan accordingly before retrying the implementation.
+  6. **Criteria for Stage Completion:** A stage is considered complete only when the unit tests pass successfully. If unit tests fail, the stage must be revisited with updated plans and implementations until unit tests pass.
+  7. **IMPORTANT:** Continue to do the next stage until all stages are complete
 
+
+  ## Phase 3: Finalization
+  1. After all stages are completed, generate a dockerfile and docker-compose file to run the refactored code. The dockerfile and docker-compose file should be placed in the `/workspace/refactor_repo` directory.
+  2. finally, generate a `final_report.md` in the `/workspace` directory, summarizing the entire refactoring process, including the challenges faced, solutions implemented, and the overall outcome of the project.
 # Logger output file (created under working_directory)
 log_filename: "multi_agent.log"
