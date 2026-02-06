@@ -12,7 +12,7 @@ The user prefers grouping by "Functional Clusters" rather than "Call Hierarchy L
 # OPERATIONAL STEPS
 1. INGEST: Use `read_file` to read the three two files.
 2. GROUPING LOGIC:
-- Understand the folder-based organization using the file under`../workspace/init/{source_dir}/snapshot/repo`.
+- Understand the folder-based organization using the file under`/workspace/init/{source_dir}/snapshot/repo`.
 - Use the dependency JSONs to find clusters of files that have high "Internal Coupling" (many edges between them) but "Low External Coupling" (fewer edges to other groups).
 3. STAGING:
 - Define Stage 1..N based on these clusters.

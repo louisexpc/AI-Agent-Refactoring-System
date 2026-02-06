@@ -1,14 +1,14 @@
 # multi_agent orchestrator config (MVP)
 # 以 config.yaml 所在資料夾 orchestrator/ 當 base，
 # ".." 會 resolve 成 repo root/
-working_directory: "../workspace"
+working_directory: "/workspace"
 ingest_url: "http://repo_ingestion:8000/ingestion/runs"
 repo_url: "https://github.com/emilybache/Racing-Car-Katas.git"
 
 llm:
   architect:
     model: "gemini-2.5-pro"
-    project: "tsmchaker"
+    project: "tsmccareerhack2026-tsid-grp3"
     location: "global"
     temperature: 0
   engineer:
