@@ -217,8 +217,38 @@ def run_characterization_pipeline(
 
     # 載入 dep_graph
     logger.info("Loading dependency graph from %s", dep_graph_path)
-    dep_graph_dict = json.loads(Path(dep_graph_path).read_text(encoding="utf-8"))
-    dep_graph = DepGraph(**dep_graph_dict)
+    try:
+        dep_graph_dict = json.loads(Path(dep_graph_path).read_text(encoding="utf-8"))
+        
+        # 防守性解析：自動修復常見缺失字段
+        dep_graph = _parse_dep_graph_safely(dep_graph_dict)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Failed to parse JSON from {dep_graph_path}: {e}"
+        ) from e
+    except Exception as e:
+        # Pydantic ValidationError or other errors
+        raise ValueError(
+            f"Invalid dependency graph format.\n"
+            f"Path: {dep_graph_path}\n"
+            f"Error: {e}\n\n"
+            f"Expected schema:\n"
+            f"{{\n"
+            f'  "nodes": [{{"node_id": "...", "path": "...", "lang": "...", "ext": "..."}}],\n'
+            f'  "edges": [{{\n'
+            f'    "src": "...",\n'
+            f'    "lang": "python|ts|go|...",\n'
+            f'    "ref_kind": "import|include|use|require|dynamic_import|other",\n'
+            f'    "dst_raw": "...",\n'
+            f'    "dst_norm": "...",\n'
+            f'    "dst_kind": "internal_file|external_pkg|stdlib|relative|unknown",\n'
+            f'    "range": {{"start_line": 1, "start_col": 0, "end_line": 1, "end_col": 10}},\n'
+            f'    "confidence": 0.95\n'
+            f'  }}],\n'
+            f'  "version": "2",\n'
+            f'  "generated_at": "2024-01-01T00:00:00Z" // optional\n'
+            f"}}\n"
+        ) from e
 
     # 轉換 mappings
     module_mappings = [
@@ -583,6 +613,125 @@ def _process_single_mapping(
 # =========================
 # Helper Functions
 # =========================
+
+
+def _parse_dep_graph_safely(dep_graph_dict: dict) -> DepGraph:
+    """防守性解析 DepGraph，自動修復常見缺失字段。
+
+    此函數會自動處理：
+    1. 缺失的 DepNode 或 DepEdge 字段（填入默認值）
+    2. 缺失的 range 對象（填入默認 DepRange）
+    3. 枚舉值錯誤（自動轉換為正確的枚舉值）
+
+    Args:
+        dep_graph_dict: 從 JSON 解析的字典。
+
+    Returns:
+        完整的 DepGraph 對象。
+
+    Raises:
+        ValueError: 如果無法修復（例如缺少絕對必需的 src/node_id）。
+    """
+    from shared.ingestion_types import DepRange, DepRefKind, DepDstKind
+
+    # 處理 nodes
+    nodes = []
+    for node in dep_graph_dict.get("nodes", []):
+        try:
+            # 驗證必需字段 node_id 和 path
+            if "node_id" not in node or "path" not in node:
+                logger.warning(
+                    "Skipping node with missing node_id or path: %s", node
+                )
+                continue
+
+            # 使用默認值補填缺失字段
+            node_safe = {
+                "node_id": node.get("node_id"),
+                "path": node.get("path"),
+                "kind": node.get("kind", "file"),
+                "lang": node.get("lang"),
+                "ext": node.get("ext"),
+            }
+            nodes.append(node_safe)
+        except Exception as e:
+            logger.warning("Failed to process node: %s, error: %s", node, e)
+
+    # 處理 edges
+    edges = []
+    for edge in dep_graph_dict.get("edges", []):
+        try:
+            # 驗證必需字段 src（至少需要來源）
+            if "src" not in edge:
+                logger.warning("Skipping edge with missing src: %s", edge)
+                continue
+
+            # 安全地獲取 range 對象，如果缺失則使用默認值
+            range_dict = edge.get("range")
+            if isinstance(range_dict, dict):
+                try:
+                    range_obj = DepRange(**range_dict)
+                except Exception:
+                    # 如果 range 解析失敗，使用默認值
+                    range_obj = DepRange(
+                        start_line=0, start_col=0, end_line=0, end_col=0
+                    )
+            else:
+                # 缺失 range，使用默認值
+                range_obj = DepRange(start_line=0, start_col=0, end_line=0, end_col=0)
+
+            # 安全地解析 ref_kind 枚舉值
+            ref_kind_str = edge.get("ref_kind", "other")
+            try:
+                ref_kind = DepRefKind(ref_kind_str)
+            except (ValueError, KeyError):
+                # 無效的枚舉值，使用默認值
+                logger.warning(
+                    "Invalid ref_kind '%s' for edge %s, using 'other'",
+                    ref_kind_str,
+                    edge.get("src"),
+                )
+                ref_kind = DepRefKind.OTHER
+
+            # 安全地解析 dst_kind 枚舉值
+            dst_kind_str = edge.get("dst_kind", "unknown")
+            try:
+                dst_kind = DepDstKind(dst_kind_str)
+            except (ValueError, KeyError):
+                # 無效的枚舉值，使用默認值
+                logger.warning(
+                    "Invalid dst_kind '%s' for edge %s, using 'unknown'",
+                    dst_kind_str,
+                    edge.get("src"),
+                )
+                dst_kind = DepDstKind.UNKNOWN
+
+            # 組裝修復後的 edge
+            edge_safe = {
+                "src": edge.get("src"),
+                "lang": edge.get("lang", "unknown"),
+                "ref_kind": ref_kind,
+                "dst_raw": edge.get("dst_raw", ""),
+                "dst_norm": edge.get("dst_norm", ""),
+                "dst_kind": dst_kind,
+                "range": range_obj,
+                "confidence": float(edge.get("confidence", 0.0)),
+                "dst_resolved_path": edge.get("dst_resolved_path"),
+                "symbol": edge.get("symbol"),
+                "is_relative": edge.get("is_relative"),
+                "extras": edge.get("extras", {}),
+            }
+            edges.append(edge_safe)
+        except Exception as e:
+            logger.warning("Failed to process edge: %s, error: %s", edge, e)
+
+    # 組裝最終的 DepGraph
+    return DepGraph(
+        nodes=nodes,
+        edges=edges,
+        version=dep_graph_dict.get("version", "2"),
+        generated_at=dep_graph_dict.get("generated_at"),
+    )
 
 
 def _parse_coverage_from_stdout(stdout: str, language: str) -> float | None:
