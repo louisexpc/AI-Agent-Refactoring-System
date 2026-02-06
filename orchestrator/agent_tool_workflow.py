@@ -2,24 +2,45 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Mapping, Sequence, TypedDict
 
+import requests
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_community.agent_toolkits import FileManagementToolkit
 from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_google_vertexai import ChatVertexAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
-import requests
 
 try:
     import yaml
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Please install PyYAML: pip install pyyaml") from exc
+
+# =========================
+# Token Estimation Logic
+# =========================
+
+
+def estimate_tokens(file_path: str) -> int:
+    """
+    透過檔案大小粗略估計 Token 數量。
+    估算標準：1 Token ≈ 4 Bytes (適用於英文/程式碼/JSON)
+    """
+    try:
+        if not os.path.exists(file_path):
+            return 0
+        file_size_bytes = os.path.getsize(file_path)
+        return int(file_size_bytes / 4)
+    except Exception:
+        return 0
+
 
 # =========================
 # Data models
@@ -177,8 +198,10 @@ def parse_app_config(config_path: Path) -> AppConfig:
     working_directory = _as_path(
         base_dir, str(raw.get("working_directory", "."))
     ).resolve()
-    ingest_url = str(raw.get("ingest_url",  "http://localhost:8000/ingestion/runs")) 
-    repo_url = str(raw.get("repo_url",  "https://github.com/emilybache/Racing-Car-Katas.git")) 
+    ingest_url = str(raw.get("ingest_url", "http://localhost:8000/ingestion/runs"))
+    repo_url = str(
+        raw.get("repo_url", "https://github.com/emilybache/Racing-Car-Katas.git")
+    )
 
     architect_raw = (
         raw.get("llm", {}).get("architect", {})
@@ -277,18 +300,95 @@ def render_user_input(cfg: AppConfig) -> str:
 
 
 def init_file_management_tools(cfg: AppConfig, log: LogPacker):
-    """Initializes file management tools within the configured root directory."""
-
+    """
+    Initializes file system tools with a "Wrapper" for read_file to handle token limits.
+    This approach preserves the original tool's logic but adds a safety layer.
+    """
     log.info(f"Initializing file system tools. root_dir={cfg.working_directory}")
+
+    # 1. 取得原廠標準工具 (完全不改動)
     toolkit = FileManagementToolkit(root_dir=str(cfg.working_directory))
-    return toolkit.get_tools()
+    std_tools = toolkit.get_tools()
+
+    # 2. 找出原本的 read_file 工具物件
+    original_read_tool = next((t for t in std_tools if t.name == "read_file"), None)
+
+    if not original_read_tool:
+        log.warning("Original read_file tool not found. Skipping wrapper.")
+        return std_tools
+
+    # 3. 定義一個「攔截器」工具
+    @tool("read_file")
+    def safe_read_wrapper(file_path: str) -> str:
+        """
+        Read a file from the filesystem.
+        Input: file_path (str) - The path to the file to read.
+        (Wrapper: Checks size first, then delegates to standard tool or truncates)
+        """
+        try:
+            # A. 計算絕對路徑 (僅用於檢查大小，不涉及讀取邏輯)
+            # 使用 resolve() 處理相對路徑
+            target_path = (cfg.working_directory / file_path).resolve()
+
+            # 簡單的安全檢查：確保路徑在工作目錄內 (防止 ../ 攻擊)
+            if not str(target_path).startswith(str(cfg.working_directory.resolve())):
+                return f"Error: Access denied. Path {file_path}is outside\
+                 the working directory."
+
+            if not target_path.exists():
+                return f"Error: File {file_path} does not exist."
+
+            # B. 檢查大小 (Token 估算)
+            est_tokens = estimate_tokens(str(target_path))
+            MAX_TOKENS = 300000  # 設定上限 (約 1200KB)
+
+            if est_tokens > MAX_TOKENS:
+                # C. 如果太大：直接回傳截斷訊息，不呼叫原廠工具
+                # 我們只讀取前 N 個 bytes 預覽一下 (Read size = Tokens * 4)
+                read_chars = MAX_TOKENS * 4
+
+                log.warning(
+                    f"🛡️ [SafeGuard] Intercepted large file: \
+                        {file_path} (~{est_tokens} tokens). \
+                        Truncating to {MAX_TOKENS} tokens."
+                )
+
+                with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                    preview = f.read(read_chars)
+
+                return (
+                    f"{preview}\n\n"
+                    f"====================================================\n"
+                    f"[SYSTEM WARNING] File content truncated by Safety Wrapper.\n"
+                    f"Original size: ~{est_tokens} tokens.\
+                    Read limit: {MAX_TOKENS} tokens.\n"
+                    f"Reason: Exceeded safety limits to prevent context overflow.\n"
+                    f"===================================================="
+                )
+
+            # D. 如果安全：呼叫原本的工具 (Delegation)
+            # 這行是關鍵！我們直接讓原廠工具去處理真正的讀取
+            log.info(f"📄 [Read File] Reading {file_path} (~{est_tokens} tokens)")
+            return original_read_tool.invoke(file_path)
+
+        except Exception as e:
+            error_msg = f"Error in safe_read_wrapper: {e}"
+            log.error(error_msg)
+            return error_msg
+
+    # 4. 替換工具列表中的 read_file
+    # 保留所有其他工具，但把 read_file 換成我們的 wrapper
+    final_tools = [t for t in std_tools if t.name != "read_file"]
+    final_tools.append(safe_read_wrapper)
+
+    return final_tools
 
 
 def init_llms(cfg: AppConfig, log: LogPacker):
     """Initializes architect/engineer LLMs."""
 
     log.info("Initializing architect LLM (Architect)...")
-    llm_architect = ChatVertexAI(
+    llm_architect = ChatGoogleGenerativeAI(
         model=cfg.architect.model,
         project=cfg.architect.project,
         # location=cfg.architect.location,
@@ -296,7 +396,7 @@ def init_llms(cfg: AppConfig, log: LogPacker):
     )
 
     log.info("Initializing engineer LLM (Engineer)...")
-    llm_engineer = ChatVertexAI(
+    llm_engineer = ChatGoogleGenerativeAI(
         model=cfg.engineer.model,
         project=cfg.engineer.project,
         # location=cfg.engineer.location,
@@ -339,8 +439,7 @@ def build_graph(
     architect_system_prompt = architect_prompt_raw.format(
         working_directory=str(cfg.working_directory).rstrip("/"),
         # repo_dir=cfg.repo_dir.lstrip("./"),
-        
-        # 如果需要 source_dir 或 repo_dir 也可以加進來
+        # 如果需要 source_dir 或 repo_dir 也可以加進來``
         source_dir=cfg.source_dir,
     )
 
@@ -363,11 +462,19 @@ def build_graph(
         Input: Natural language refactor code request
         (e.g., 'refactor code in the ./python to JAVA')
         """
+        log.info(
+            f"➡️ [Next Step] Architect is delegating\
+            task to Engineer. Request: {request[:50]}..."
+        )
         result = llm_engineer_with_tools.invoke(
             {
                 "messages": [HumanMessage(content=request)],
                 "config": {"recursion_limit": 100},
             }
+        )
+
+        log.info(
+            "⬅️ [Next Step] Engineer finished task. Returning result to Architect..."
         )
         return str(result["messages"][-1].content)
 
@@ -379,7 +486,9 @@ def build_graph(
 
     def architect_node(state: AgentState):
         """Architect node: produces a step-by-step plan (no tool calls)."""
-
+        log.info(
+            "🧠 [Next Step] Architect is thinking/planning based on current state..."
+        )
         messages = state["messages"]
         response = llm_architect_with_tools.invoke(
             {"messages": messages},  # 這是 Input
@@ -435,6 +544,9 @@ def stream_pretty(app, user_input: str, log: LogPacker) -> None:
     inputs = {"messages": [HumanMessage(content=user_input)]}
 
     seen_architect = False
+    log.info(
+        "🚀 [Next Step] Injecting user input into the Graph and starting execution..."
+    )
 
     for event in app.stream(inputs, stream_mode="values"):
         last_msg = event["messages"][-1]
@@ -445,7 +557,12 @@ def stream_pretty(app, user_input: str, log: LogPacker) -> None:
                 seen_architect = True
             else:
                 role = "Engineer"
-
+            # [NEW LOG] 判斷 AI 接下來要幹嘛
+            if getattr(last_msg, "tool_calls", None):
+                tool_names = [t.get("name", "") for t in last_msg.tool_calls]
+                log.info(f"🛠️ [Next Step] {role} intends to execute tools: {tool_names}")
+            else:
+                log.info(f"💬 [Next Step] {role} is generating a response/plan...")
             log.info(f"[{role}] {last_msg.content}")
             if getattr(last_msg, "tool_calls", None):
                 tool_names = [t.get("name", "") for t in last_msg.tool_calls]
@@ -453,6 +570,9 @@ def stream_pretty(app, user_input: str, log: LogPacker) -> None:
 
         elif last_msg.type == "tool":
             # Tool output may be huge; record length only.
+            log.info(
+                "✅ [Next Step] Tool execution completed. Returning output to Agent..."
+            )
             log.info(f"[Tool] returned_len={len(str(last_msg.content))}")
 
 
@@ -460,6 +580,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Main entry point."""
 
     load_dotenv()
+    print("📋 [Next Step] Loading configuration and arguments...")
 
     args = parse_args(argv)
     cfg = parse_app_config(Path(args.config).resolve())
@@ -477,7 +598,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
         },
     )
-    
+    log.info(
+        f"📡 [Next Step] Sending repository ingestion request to {cfg.ingest_url}..."
+    )
 
     # 設定 API 端點網址
     ingest_url = cfg.ingest_url
@@ -505,15 +628,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     except requests.exceptions.RequestException as e:
         print(f"發送請求時發生錯誤: {e}")
 
-
+    log.info("🧰 [Next Step] Initializing file management tools & LLMs...")
     tools = init_file_management_tools(cfg, log)
     llm_architect, llm_engineer = init_llms(cfg, log)
+    log.info("🏗️ [Next Step] Building the Agent Graph...")
     app = build_graph(cfg, tools, llm_architect, llm_engineer, log)
     # app.get_graph().print_ascii()
     user_input = render_user_input(cfg)
-    log.info("Starting multi-agent execution...")
+    log.info("▶️ [Next Step] Starting multi-agent execution loop...")
     stream_pretty(app, user_input, log)
-    log.info(f"Done. Check target directory: {cfg.target_dir}")
+    log.info(f"🏁 [Done] Execution finished. Check target directory: {cfg.target_dir}")
 
     return 0
 
