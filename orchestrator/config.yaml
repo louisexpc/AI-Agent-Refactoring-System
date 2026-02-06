@@ -30,39 +30,92 @@ target_dir: "refactor_repo"
 # This template is rendered via Python .format() with:
 # {working_directory}, {source_dir}, {target_dir}, {repo_dir}
 user_input_template: >
-  # Task: Multi-Stage Refactoring from Python to Go
+  # Master Protocol: Python-to-Go Refactoring Orchestrator
 
-  Refactor the Python code file under the `/workspace/init/{source_dir}/snapshot/repo` folder into Go.
-  ## Phase 1: Initial Analysis & Specification
-  Before performing any planning or modification tasks, you MUST first read and reason over the following data sources in order:
+  **Role**: You are the **Lead Migration Architect & Orchestrator**.
+  **Mission**: Completely refactor a legacy Python codebase into idiomatic Go (Golang), strictly following a multi-stage, test-driven workflow.
+  **Target Source**: `/workspace/init/{source_dir}/snapshot/repo`
+  **Output Destination**: `/workspace/refactor_repo`
 
-  1. **Dependency Graphs:**
-     - Read `/workspace/init/{source_dir}/depgraph/dep_graph_light.json`
-     - Read `/workspace/init/{source_dir}/depgraph/dep_reverse_index_light.json`
+  ---
 
-  2. **Source Code Retrieval:**
-     - Target Directory: `/workspace/init/{source_dir}/snapshot/repo/`
-     - **Action 1:** Use `list_directory` to list all files in this directory.
-     - **Action 2:** Identify all files ending with `.py`.
-     - **Action 3:** Use `read_file` to read the content of every identified Python file.
+  ## 🛑 GLOBAL OPERATIONAL CONSTRAINTS
 
-  3. **Analysis Output:**
-     - **Analyze the project structure and dependencies to generate a `spec.md` in the `/workspace/init/plan` directory.**
+  1. **Linear Progression**: You must complete Phase 1 before entering Phase 2. You must complete Stage X before starting Stage X+1.
+  2. **Immutable Source**: The `/workspace/init` directory is **READ-ONLY**. Never write to it except for the `/workspace/init/plan` folder.
+  3. **State Persistence**: All code must be written to disk. Do not rely on context memory for code storage.
 
-  ## Phase 2: Execution via Subagent (Stage-by-Stage)
-  Call the refactor tool and generate test tool to perform the refactoring and testing in sequential stages. For every new stage (Stage X) or new run, the tool MUST follow this protocol before modifying any code:
+  ---
 
-  1. **Information Gathering:** Read the current target Python code, the project `spec.md`, and the "Stage Unit test Output Report" from the previous run (if applicable).
-  2. **Detailed Planning:** Generate a detailed execution plan.
-  3. **Module Mapping:** Generate a JSON file for the current stage .
-  4. **Implementation:** Proceed with the code modifications only after the planning artifacts are created.
-  5. **Unit Testing:** After code modification, run unit tests to ensure correctness. If tests fail, analyze the failure and update the plan accordingly before retrying the implementation.
-  6. **Criteria for Stage Completion:** A stage is considered complete only when the unit tests pass successfully. If unit tests fail, the stage must be revisited with updated plans and implementations until unit tests pass.
-  7. **IMPORTANT:** Continue to do the next stage until all stages are complete
+  ## 🔹 Phase 1: Deep Analysis & Architectural Specification
+
+  **Objective**: Map the territory and create the battle plan (`spec.md`).
+
+  **Execution Steps**:
+
+  1. **Ingest Dependency Metadata**:
+  * Call `read_file` on `/workspace/init/{source_dir}/depgraph/dep_graph_light.json`.
+  * Call `read_file` on `/workspace/init/{source_dir}/depgraph/dep_reverse_index_light.json`.
 
 
-  ## Phase 3: Finalization
-  1. After all stages are completed, generate a dockerfile and docker-compose file to run the refactored code. The dockerfile and docker-compose file should be placed in the `/workspace/refactor_repo` directory.
-  2. finally, generate a `final_report.md` in the `/workspace` directory, summarizing the entire refactoring process, including the challenges faced, solutions implemented, and the overall outcome of the project.
-# Logger output file (created under working_directory)
+  2. **Source Code Crawl**:
+  * Call `list_directory` on `/workspace/init/{source_dir}/snapshot/repo/`.
+  * **Filter**: Identify ALL files ending in `.py`.
+  * **Ingest**: Call `read_file` on **EVERY** identified `.py` file to load the logic into your reasoning context.
+
+
+  3. **Generate Specification**:
+  * Analyze the functional clusters.
+  * Create the master plan file at `/workspace/init/plan/spec.md`.
+  * **Requirement**: The `spec.md` must break the migration into specific **Stages** (e.g., Stage 1: Utils, Stage 2: Models, Stage 3: API).
+
+  ---
+
+  ## 🔸 Phase 2: The Refactoring Loop (Iterative Execution)
+
+  **Protocol**: You must execute the following cycle for **EACH Stage** defined in `spec.md`.
+
+  ### The "Stage X" Cycle:
+
+  1. **Context Sync**:
+  * Read `spec.md` to identify the current Stage.
+  * Read the target Python files for this stage.
+  * (If applicable) Read the `test_report.md` from the previous run.
+
+
+  2. **Planning (Mandatory Pre-computation)**:
+  * Create a detailed plan at: `/workspace/stage_<X>/run_<I>/stage_plan/stage_<X>_run_<I>.md`.
+  * Create the file mapping JSON at: `/workspace/stage_<X>/run_<I>/stage_plan/mapping_<X>_run_<I>.json`.
+  * *Constraint*: Do not write code until these files exist.
+
+
+  3. **Implementation**:
+  * Translate the Python logic to Go.
+  * Write the resulting `.go` files to `/workspace/refactor_repo/...`.
+
+
+  4. **Verification (The Gatekeeper)**:
+  * Generate and run a **Unit Test** for the new Go code.
+  * **IF PASS**: Mark Stage <X> as COMPLETE. Proceed to Stage <X+1>.
+  * **IF FAIL**: Stop. Analyze the error. Increment the Run ID (Run <I+1>) and restart the **Planning** step for this Stage. **DO NOT** proceed to the next stage until tests pass.
+
+
+  *Repeat this cycle until ALL stages in `spec.md` are marked Complete.*
+
+  ---
+
+  ## 🏁 Phase 3: Finalization & Delivery
+
+  **Trigger**: Execute this ONLY after the final Stage in Phase 2 has passed its unit tests.
+
+  1. **Containerization**:
+  * Analyze the full Go codebase in `/workspace/refactor_repo`.
+  * Create a production-ready `Dockerfile` in `/workspace/refactor_repo`.
+  * Create a `docker-compose.yml` (if database/services are required) in `/workspace/refactor_repo`.
+
+
+  2. **Project Retrospective**:
+  * Generate `/workspace/final_report.md`.
+  * Include: Summary of architecture changes, list of resolved dependency challenges, and instructions on how to build/run the Go project.
+
 log_filename: "multi_agent.log"
