@@ -301,88 +301,115 @@ def render_user_input(cfg: AppConfig) -> str:
 
 def init_file_management_tools(cfg: AppConfig, log: LogPacker):
     """
-    Initializes file system tools with a "Wrapper" for read_file to handle token limits.
-    This approach preserves the original tool's logic but adds a safety layer.
+    Initializes file system tools with Wrappers:
+    1. Read: Checks token limits (Safety).
+    2. Write: Logs the file path (Transparency).
     """
     log.info(f"Initializing file system tools. root_dir={cfg.working_directory}")
 
-    # 1. 取得原廠標準工具 (完全不改動)
+    # 1. 取得原廠標準工具
     toolkit = FileManagementToolkit(root_dir=str(cfg.working_directory))
     std_tools = toolkit.get_tools()
 
-    # 2. 找出原本的 read_file 工具物件
+    # ============================
+    # Wrapper 1: Safe Read File
+    # ============================
     original_read_tool = next((t for t in std_tools if t.name == "read_file"), None)
 
-    if not original_read_tool:
-        log.warning("Original read_file tool not found. Skipping wrapper.")
-        return std_tools
+    # 預設使用原廠工具，稍後如果有定義 wrapper 則替換
+    final_read_tool = original_read_tool
 
-    # 3. 定義一個「攔截器」工具
-    @tool("read_file")
-    def safe_read_wrapper(file_path: str) -> str:
-        """
-        Read a file from the filesystem.
-        Input: file_path (str) - The path to the file to read.
-        (Wrapper: Checks size first, then delegates to standard tool or truncates)
-        """
-        try:
-            # A. 計算絕對路徑 (僅用於檢查大小，不涉及讀取邏輯)
-            # 使用 resolve() 處理相對路徑
-            target_path = (cfg.working_directory / file_path).resolve()
+    if original_read_tool:
+        @tool("read_file")
+        def safe_read_wrapper(file_path: str) -> str:
+            """
+            Read a file from the filesystem.
+            Input: file_path (str)
+            (Wrapper: Checks size first, then delegates to standard tool or truncates)
+            """
+            try:
+                # A. 計算絕對路徑
+                target_path = (cfg.working_directory / file_path).resolve()
 
-            # 簡單的安全檢查：確保路徑在工作目錄內 (防止 ../ 攻擊)
-            if not str(target_path).startswith(str(cfg.working_directory.resolve())):
-                return f"Error: Access denied. Path {file_path}is outside\
-                 the working directory."
+                # 安全檢查
+                if not str(target_path).startswith(str(cfg.working_directory.resolve())):
+                    return f"Error: Access denied. Path {file_path} is outside the working directory."
 
-            if not target_path.exists():
-                return f"Error: File {file_path} does not exist."
+                if not target_path.exists():
+                    return f"Error: File {file_path} does not exist."
 
-            # B. 檢查大小 (Token 估算)
-            est_tokens = estimate_tokens(str(target_path))
-            MAX_TOKENS = 300000  # 設定上限 (約 1200KB)
+                # B. 檢查大小 (Token 估算)
+                est_tokens = estimate_tokens(str(target_path))
+                MAX_TOKENS = 300000
 
-            if est_tokens > MAX_TOKENS:
-                # C. 如果太大：直接回傳截斷訊息，不呼叫原廠工具
-                # 我們只讀取前 N 個 bytes 預覽一下 (Read size = Tokens * 4)
-                read_chars = MAX_TOKENS * 4
+                if est_tokens > MAX_TOKENS:
+                    read_chars = MAX_TOKENS * 4
+                    log.warning(
+                        f"🛡️ [SafeGuard] Intercepted large file: {file_path} (~{est_tokens} tokens). Truncating."
+                    )
+                    with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                        preview = f.read(read_chars)
+                    return (
+                        f"{preview}\n\n"
+                        f"====================================================\n"
+                        f"[SYSTEM WARNING] File content truncated.\n"
+                        f"Original size: ~{est_tokens} tokens. Limit: {MAX_TOKENS}.\n"
+                        f"===================================================="
+                    )
 
-                log.warning(
-                    f"🛡️ [SafeGuard] Intercepted large file: \
-                        {file_path} (~{est_tokens} tokens). \
-                        Truncating to {MAX_TOKENS} tokens."
-                )
+                # D. 呼叫原廠工具
+                log.info(f"📄 [Read File] Reading {file_path} (~{est_tokens} tokens)")
+                return original_read_tool.invoke(file_path)
 
-                with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-                    preview = f.read(read_chars)
+            except Exception as e:
+                error_msg = f"Error in safe_read_wrapper: {e}"
+                log.error(error_msg)
+                return error_msg
 
-                return (
-                    f"{preview}\n\n"
-                    f"====================================================\n"
-                    f"[SYSTEM WARNING] File content truncated by Safety Wrapper.\n"
-                    f"Original size: ~{est_tokens} tokens.\
-                    Read limit: {MAX_TOKENS} tokens.\n"
-                    f"Reason: Exceeded safety limits to prevent context overflow.\n"
-                    f"===================================================="
-                )
+        final_read_tool = safe_read_wrapper
 
-            # D. 如果安全：呼叫原本的工具 (Delegation)
-            # 這行是關鍵！我們直接讓原廠工具去處理真正的讀取
-            log.info(f"📄 [Read File] Reading {file_path} (~{est_tokens} tokens)")
-            return original_read_tool.invoke(file_path)
+    # ============================
+    # Wrapper 2: Log Write File  <-- 新增的部分
+    # ============================
+    original_write_tool = next((t for t in std_tools if t.name == "write_file"), None)
 
-        except Exception as e:
-            error_msg = f"Error in safe_read_wrapper: {e}"
-            log.error(error_msg)
-            return error_msg
+    final_write_tool = original_write_tool
 
-    # 4. 替換工具列表中的 read_file
-    # 保留所有其他工具，但把 read_file 換成我們的 wrapper
-    final_tools = [t for t in std_tools if t.name != "read_file"]
-    final_tools.append(safe_read_wrapper)
+    if original_write_tool:
+        @tool("write_file")
+        def write_log_wrapper(file_path: str, text: str) -> str:
+            """
+            Write a file to the filesystem.
+            Input: file_path (str), text (str) - The content to write.
+            (Wrapper: Logs the write action with path)
+            """
+            # 在這裡加上 Log
+            log.info(f"💾 [Write File] Saving content to: {file_path}")
+
+            try:
+                # 呼叫原廠工具執行真正的寫入
+                # 注意: write_file 通常需要傳入字典參數
+                return original_write_tool.invoke({"file_path": file_path, "text": text})
+            except Exception as e:
+                error_msg = f"Error writing file {file_path}: {e}"
+                log.error(f"❌ [Write File] Failed: {error_msg}")
+                return error_msg
+
+        final_write_tool = write_log_wrapper
+
+    # ============================
+    # 3. 組裝最終工具列表
+    # ============================
+    final_tools = []
+    for t in std_tools:
+        if t.name == "read_file":
+            if final_read_tool: final_tools.append(final_read_tool)
+        elif t.name == "write_file":
+            if final_write_tool: final_tools.append(final_write_tool)
+        else:
+            final_tools.append(t)
 
     return final_tools
-
 
 def init_llms(cfg: AppConfig, log: LogPacker):
     """Initializes architect/engineer LLMs."""
