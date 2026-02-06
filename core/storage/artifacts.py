@@ -56,6 +56,8 @@ class ArtifactLayout:
             "evidence",
             "logs",
             "coverage",
+            "test_gen",
+            "test_gen/emitted",
         ):
             (run_dir / subdir).mkdir(parents=True, exist_ok=True)
         return run_dir
