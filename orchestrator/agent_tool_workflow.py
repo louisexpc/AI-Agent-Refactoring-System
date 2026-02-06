@@ -461,6 +461,7 @@ def init_llms(cfg: AppConfig, log: LogPacker):
 
 def build_graph(
     cfg: AppConfig,
+    run_id: str,
     tools,
     llm_architect: ChatGoogleGenerativeAI,
     llm_engineer: ChatGoogleGenerativeAI,
@@ -483,7 +484,7 @@ def build_graph(
         # repo_dir=cfg.repo_dir.lstrip("./"),
 
         # 如果需要 source_dir 或 repo_dir 也可以加進來
-        source_dir=cfg.source_dir,
+        source_dir=run_id,
     )
 
     llm_engineer_with_tools = create_agent(
@@ -665,7 +666,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         # 輸出回傳結果
         print("狀態碼:", response.status_code)
         print("回傳內容:", response.json())
-
+        run_id = response.json().get("run_id")
+        log.info(f"📥 [Next Step] Repository ingestion started. run_id={run_id}")
     except requests.exceptions.RequestException as e:
         print(f"發送請求時發生錯誤: {e}")
 
