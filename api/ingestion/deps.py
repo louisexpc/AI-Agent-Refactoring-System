@@ -68,8 +68,7 @@ class InMemoryIngestionService:
         print(f"Repo root: {repo_root}")
         artifacts_root = self._artifacts_root or default_artifacts_root(repo_root)
         if save_path is not None:
-            rel_save_path = normalize_relative_path(save_path, base_dir=repo_root)
-            artifacts_root = repo_root / rel_save_path
+            artifacts_root = normalize_save_path(save_path, base_dir=repo_root)
             print(f"Set artifacts_root to: {artifacts_root}")
         layout = ArtifactLayout(artifacts_root)
         repo = RunRepository(layout)
@@ -402,30 +401,23 @@ def _sha256_file(path: Path) -> str | None:
         return None
 
 
-def normalize_relative_path(
+def normalize_save_path(
     save_path: str | Path,
     *,
     base_dir: Path,
 ) -> Path:
-    """
-    Normalize save_path to a path relative to base_dir.
+    """Normalize save_path for artifacts output.
 
     Rules:
-    - Absolute paths are converted to relative by stripping anchor.
-    - Path traversal outside base_dir is rejected.
+    - Absolute paths are used as-is (resolved).
+    - Relative paths are anchored under base_dir.
+    - Path traversal outside base_dir is rejected for relative paths.
     """
     p = Path(save_path)
-
-    # 1. 絕對路徑 → 去掉 root anchor（/ 或 C:\）
     if p.is_absolute():
-        p = Path(*p.parts[1:])  # /a/b/c -> a/b/c
+        return p.resolve()
 
-    # 2. Normalize (remove .. / .)
     candidate = (base_dir / p).resolve()
-
-    # 3. 防止 path traversal
     if not candidate.is_relative_to(base_dir):
         raise ValueError(f"Invalid save_path (escapes base_dir): {save_path}")
-
-    # 4. 回傳「相對於 base_dir 的 Path」
-    return candidate.relative_to(base_dir)
+    return candidate
