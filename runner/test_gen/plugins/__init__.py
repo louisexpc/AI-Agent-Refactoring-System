@@ -265,10 +265,40 @@ class LanguagePlugin(ABC):
                 issues=[],
                 auto_fixed=[],
                 error_output=(
-                    f"LLM analysis failed: {str(e)}\n\n"
-                    f"Original error:\n{error_output}"
+                    f"LLM analysis failed: {str(e)}\n\nOriginal error:\n{error_output}"
                 ),
             )
+
+    def generate_execution_artifacts(
+        self,
+        repo_dir: Path,
+        output_dir: Path,
+        language: str,
+        llm_client: Any,
+        script_path: Path | None = None,
+        test_file_path: Path | None = None,
+        source_dirs: list[str] | None = None,
+        sandbox_base: str | None = None,
+        local_base: Path | None = None,
+    ) -> dict[str, Path]:
+        """生成執行所需的 requirements 和 shell 腳本（可選方法，非抽象）。
+
+        Args:
+            repo_dir: Repo 目錄。
+            output_dir: 輸出目錄。
+            language: 語言名稱。
+            llm_client: LLM 呼叫介面（用於生成 sh 和 requirements）。
+            script_path: Golden script 路徑（如果是 golden capture）。
+            test_file_path: Test file 路徑（如果是 test execution）。
+            source_dirs: Source directories。
+            sandbox_base: Sandbox 內的基礎路徑（如 "/workspace"）。
+            local_base: 對應 sandbox_base 的本地路徑（用於路徑轉換）。
+
+        Returns:
+            {"requirements": Path, "execution_sh": Path} 或空 dict。
+        """
+        # 預設實作：不生成任何檔案
+        return {}
 
 
 _PLUGIN_REGISTRY: dict[str, type[LanguagePlugin]] = {}
@@ -304,13 +334,23 @@ def get_plugin(language: str) -> LanguagePlugin:
 
 def _auto_register() -> None:
     """自動註冊內建 plugins。"""
+    from runner.test_gen.plugins.c_plugin import CPlugin
     from runner.test_gen.plugins.go_plugin import GoPlugin
-    from runner.test_gen.plugins.java_plugin import JavaPlugin
+    from runner.test_gen.plugins.kotlin_plugin import KotlinPlugin
     from runner.test_gen.plugins.python_plugin import PythonPlugin
+    from runner.test_gen.plugins.ruby_plugin import RubyPlugin
+    from runner.test_gen.plugins.rust_plugin import RustPlugin
+    from runner.test_gen.plugins.typescript_plugin import TypeScriptPlugin
 
     register_plugin("python", PythonPlugin)
     register_plugin("go", GoPlugin)
-    register_plugin("java", JavaPlugin)
+    register_plugin("c", CPlugin)
+    register_plugin("rust", RustPlugin)
+    register_plugin("ruby", RubyPlugin)
+    register_plugin("typescript", TypeScriptPlugin)
+    register_plugin("ts", TypeScriptPlugin)  # 別名
+    register_plugin("kotlin", KotlinPlugin)
+    register_plugin("kt", KotlinPlugin)  # 別名
 
 
 _auto_register()

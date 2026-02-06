@@ -11,7 +11,7 @@ __pycache__/
 # Build
 dist/
 build/
-
+workspace/
 # OS
 .DS_Store
 

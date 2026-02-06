@@ -332,7 +332,7 @@ class GoPlugin(LanguagePlugin):
             except subprocess.TimeoutExpired:
                 return False, f"TIMEOUT in {go_dir}"
             except Exception as exc:
-                return False, (f"Error in {go_dir}: " f"{str(exc)[:500]}")
+                return False, (f"Error in {go_dir}: {str(exc)[:500]}")
 
         return all_success, "\n".join(all_output)
 
@@ -393,9 +393,10 @@ class GoPlugin(LanguagePlugin):
             # 設置環境變數
             env = self._setup_go_env()
 
-            # 執行 go build（建置整個 package 包含測試）
+            # 執行 go test -c（編譯測試檔案，不執行）
+            # 這會檢查測試檔案的語法錯誤，包括未使用的變數
             result = subprocess.run(
-                ["go", "build", "."],
+                ["go", "test", "-c"],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -482,6 +483,78 @@ class GoPlugin(LanguagePlugin):
         if match:
             return match.group(1)
         return "main"
+
+    def generate_execution_artifacts(
+        self,
+        repo_dir: Path,
+        output_dir: Path,
+        language: str,
+        llm_client: Any,
+        script_path: Path | None = None,
+        test_file_path: Path | None = None,
+        source_dirs: list[str] | None = None,
+        sandbox_base: str | None = None,
+        local_base: Path | None = None,
+    ) -> dict[str, Path]:
+        """生成 go.mod 和 execution.sh（暫時用固定模板，未來可改用 LLM）"""
+        import shutil
+
+        def to_sandbox_path(local_path: Path) -> str:
+            """將本地路徑轉換為 sandbox 路徑。"""
+            if sandbox_base and local_base:
+                try:
+                    rel = local_path.resolve().relative_to(local_base.resolve())
+                    return f"{sandbox_base}/{rel}"
+                except ValueError:
+                    pass
+            return str(local_path.resolve())
+
+        artifacts = {}
+
+        # 1. 檢查或複製 go.mod（如果存在）
+        go_mod_src = repo_dir / "go.mod"
+        if go_mod_src.exists():
+            go_mod_dst = output_dir / "go.mod"
+            shutil.copy2(go_mod_src, go_mod_dst)
+            artifacts["requirements"] = go_mod_dst
+
+        # 2. 生成 execution.sh
+        repo_dir_path = to_sandbox_path(repo_dir)
+
+        if script_path:  # Golden script (Go 不常用 script，但支援)
+            sh_path = output_dir / "execute_golden.sh"
+            script_path_str = to_sandbox_path(script_path)
+            sh_content = f"""#!/bin/bash
+set -e
+cd {repo_dir_path}
+go run {script_path_str}
+"""
+        elif test_file_path:  # Test file
+            sh_path = output_dir / "execute_test.sh"
+            test_filename = test_file_path.name
+            test_file_path_str = to_sandbox_path(test_file_path)
+            # 使用 source_dirs 來確定測試目錄（Go test 需要和 source 在同一目錄）
+            if source_dirs and len(source_dirs) > 0:
+                # 假設所有 source 都在同一個目錄
+                test_target_dir = repo_dir / source_dirs[0]
+            else:
+                test_target_dir = repo_dir
+            test_target_dir_str = to_sandbox_path(test_target_dir)
+            sh_content = f"""#!/bin/bash
+set -e
+# Copy test file to source directory (Go requires test to be with source)
+cp {test_file_path_str} {test_target_dir_str}/{test_filename}
+cd {test_target_dir_str}
+go test -v -cover -coverprofile=coverage.out
+"""
+        else:
+            return artifacts
+
+        sh_path.write_text(sh_content, encoding="utf-8")
+        sh_path.chmod(0o755)
+        artifacts["execution_sh"] = sh_path
+
+        return artifacts
 
 
 # ---------------------------------------------------------------------------

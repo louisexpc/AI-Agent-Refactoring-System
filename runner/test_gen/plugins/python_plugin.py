@@ -354,6 +354,224 @@ class PythonPlugin(LanguagePlugin):
             )
         return source_code  # 多檔時已經預先格式化
 
+    def generate_execution_artifacts(
+        self,
+        repo_dir: Path,
+        output_dir: Path,
+        language: str,
+        llm_client: Any,
+        script_path: Path | None = None,
+        test_file_path: Path | None = None,
+        source_dirs: list[str] | None = None,
+        sandbox_base: str | None = None,
+        local_base: Path | None = None,
+    ) -> dict[str, Path]:
+        """用 LLM 生成 requirements.txt 和 execution.sh
+
+        Args:
+            repo_dir: 原始碼 repo 目錄（本地路徑）。
+            output_dir: 輸出目錄（本地路徑）。
+            language: 程式語言。
+            llm_client: LLM 呼叫介面。
+            script_path: Golden script 路徑。
+            test_file_path: Test file 路徑。
+            source_dirs: 原始碼目錄相對路徑。
+            sandbox_base: Sandbox 內的基礎路徑（如 "/workspace"）。
+            local_base: 對應 sandbox_base 的本地路徑（用於路徑轉換）。
+
+        Returns:
+            artifacts dict。
+        """
+        artifacts = {}
+
+        # 1. 用 LLM 生成 requirements.txt
+        requirements_path = output_dir / "requirements.txt"
+        requirements_content = self._generate_requirements_with_llm(
+            script_path=script_path,
+            test_file_path=test_file_path,
+            repo_dir=repo_dir,
+            llm_client=llm_client,
+        )
+        requirements_path.write_text(requirements_content, encoding="utf-8")
+        artifacts["requirements"] = requirements_path
+
+        # 2. 用模板生成 execution.sh（避免 LLM 路徑錯誤）
+        if script_path or test_file_path:
+            sh_path = (
+                output_dir / "execute_golden.sh"
+                if script_path
+                else output_dir / "execute_test.sh"
+            )
+            sh_content = self._generate_sh_with_template(
+                script_path=script_path,
+                test_file_path=test_file_path,
+                repo_dir=repo_dir,
+                source_dirs=source_dirs,
+                requirements_path=requirements_path,
+                sandbox_base=sandbox_base,
+                local_base=local_base,
+            )
+            sh_path.write_text(sh_content, encoding="utf-8")
+            sh_path.chmod(0o755)
+            artifacts["execution_sh"] = sh_path
+
+        return artifacts
+
+    def _generate_requirements_with_llm(
+        self,
+        script_path: Path | None,
+        test_file_path: Path | None,
+        repo_dir: Path,
+        llm_client: Any,
+    ) -> str:
+        """用 LLM 分析代碼並生成 requirements.txt"""
+        # 讀取代碼
+        target_file = script_path or test_file_path
+        if not target_file or not target_file.exists():
+            return "pytest>=7.0.0\npytest-cov>=4.0.0\ncoverage>=7.0.0\n"
+
+        code_content = target_file.read_text(encoding="utf-8")
+
+        # 檢查是否有現有的 requirements.txt
+        existing_req = repo_dir / "requirements.txt"
+        existing_req_content = ""
+        if existing_req.exists():
+            existing_req_content = existing_req.read_text(encoding="utf-8")
+
+        prompt = f"""Analyze the Python code and generate a requirements.txt file.
+
+Code to analyze:
+```python
+{code_content}
+```
+
+Existing requirements.txt in repo (if any):
+```
+{existing_req_content if existing_req_content else "None"}
+```
+
+Task:
+1. Extract all imported packages from the code
+2. If existing requirements.txt exists, use it as base and add any missing packages
+3. If no existing requirements.txt, generate from scratch
+4. Include pytest, pytest-cov, coverage for testing
+5. Use version constraints (>=) for better compatibility
+
+Output ONLY the requirements.txt content, no explanations."""
+
+        requirements = llm_client.generate(prompt).strip()
+
+        # 清理 LLM 輸出（移除 markdown code blocks）
+        if requirements.startswith("```"):
+            lines = requirements.split("\n")
+            requirements = "\n".join(
+                line for line in lines if not line.strip().startswith("```")
+            )
+
+        return requirements.strip()
+
+    def _generate_sh_with_template(
+        self,
+        script_path: Path | None,
+        test_file_path: Path | None,
+        repo_dir: Path,
+        source_dirs: list[str] | None,
+        requirements_path: Path,
+        sandbox_base: str | None = None,
+        local_base: Path | None = None,
+    ) -> str:
+        """用模板生成 execution.sh（避免 LLM 路徑錯誤）
+
+        Args:
+            script_path: Golden script 路徑。
+            test_file_path: Test file 路徑。
+            repo_dir: 原始碼 repo 目錄。
+            source_dirs: 原始碼目錄相對路徑。
+            requirements_path: requirements.txt 路徑。
+            sandbox_base: Sandbox 內的基礎路徑（如 "/workspace"）。
+            local_base: 對應 sandbox_base 的本地路徑。
+
+        Returns:
+            Shell script 內容。
+        """
+
+        def to_sandbox_path(local_path: Path) -> str:
+            """將本地路徑轉換為 sandbox 路徑。"""
+            if sandbox_base and local_base:
+                try:
+                    rel = local_path.resolve().relative_to(local_base.resolve())
+                    return f"{sandbox_base}/{rel}"
+                except ValueError:
+                    # 路徑不在 local_base 下，回退到絕對路徑
+                    pass
+            return str(local_path.resolve())
+
+        # 轉換路徑
+        repo_dir_path = to_sandbox_path(repo_dir)
+        requirements_path_str = to_sandbox_path(requirements_path)
+
+        # 建立 PYTHONPATH 設定
+        pythonpath_lines = []
+        if source_dirs:
+            for i, src_dir in enumerate(source_dirs):
+                pythonpath_lines.append(f'SOURCE_DIR_{i}="$REPO_DIR/{src_dir}"')
+            path_vars = ":".join(f"$SOURCE_DIR_{i}" for i in range(len(source_dirs)))
+            pythonpath_lines.append(
+                f'export PYTHONPATH="{path_vars}${{PYTHONPATH:+:$PYTHONPATH}}"'
+            )
+        pythonpath_block = "\n".join(pythonpath_lines) if pythonpath_lines else ""
+
+        if script_path:
+            # Golden script 執行
+            script_path_str = to_sandbox_path(script_path)
+            return f"""#!/bin/bash
+set -e
+
+# Paths
+REPO_DIR="{repo_dir_path}"
+REQUIREMENTS_FILE="{requirements_path_str}"
+SCRIPT_TO_EXECUTE="{script_path_str}"
+
+# 1. Install dependencies
+python3 -m pip install -r "$REQUIREMENTS_FILE"
+
+# 2. Set up PYTHONPATH
+{pythonpath_block}
+
+# 3. Change to repo directory
+cd "$REPO_DIR"
+
+# 4. Execute golden script
+python3 "$SCRIPT_TO_EXECUTE"
+"""
+        elif test_file_path:
+            # Test file 執行
+            test_path_str = to_sandbox_path(test_file_path)
+            test_dir_str = to_sandbox_path(test_file_path.parent)
+            return f"""#!/bin/bash
+set -e
+
+# Paths
+REPO_DIR="{repo_dir_path}"
+REQUIREMENTS_FILE="{requirements_path_str}"
+TEST_FILE="{test_path_str}"
+TEST_DIR="{test_dir_str}"
+
+# 1. Install dependencies
+python3 -m pip install -r "$REQUIREMENTS_FILE"
+
+# 2. Set up PYTHONPATH
+{pythonpath_block}
+
+# 3. Change to test directory
+cd "$TEST_DIR"
+
+# 4. Execute pytest
+python3 -m pytest "$TEST_FILE" -v --tb=short
+"""
+        else:
+            return "#!/bin/bash\necho 'No script specified'\n"
+
 
 # ---------------------------------------------------------------------------
 # Helpers

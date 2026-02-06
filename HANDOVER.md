@@ -1,87 +1,111 @@
-# Generate Test 模組使用說明
+# LangGraph `generate_test` Tool 使用指引
 
-## 快速開始
+## 1. 匯入 Tool
 
-### 1. 準備輸入檔案
+```python
+from runner.test_gen.pipeline_tool import generate_test
 
-準備以下檔案（**預設使用 mapping_1.json**）：
+# 建立 LangGraph agent 時加入 tools
+tools = [generate_test]
+```
 
-| 檔案 | 預設路徑 | 說明 |
-|------|---------|------|
-| **Mapping 設定** | `scripts/mapping_1.json` | 定義 before/after 檔案對應 |
-| **Dep Graph** | `artifacts/f3f7dfdffa4940d185668190b7a28b05/depgraph/dep_graph.json` | 依賴圖 |
-| **原始碼** | `artifacts/f3f7dfdffa4940d185668190b7a28b05/snapshot/repo` | 舊程式碼 (before) |
-| **重構後程式碼** | `.` (專案根目錄) | 新程式碼 (after)，包含 `refactor/` 資料夾 |
+## 2. Mapping JSON 格式
 
-**mapping_1.json** 對應模組：`refactor/telemetry/`（Python → Go）
-
-#### mapping_1.json 內容
+Tool 需要一個 `mapping_path` 指向 JSON 檔案，格式如下：
 
 ```json
 {
+  "repo_dir": "workspace/init/<SHA256>/repo",
+  "refactored_repo_dir": "workspace/refactor_repo",
+  "dep_graph_path": "workspace/init/<SHA256>/depgraph/dep_graph.json",
   "source_language": "python",
   "target_language": "go",
-  "repo_dir": "artifacts/f3f7dfdffa4940d185668190b7a28b05/snapshot/repo",
-  "refactored_repo_dir": ".",
-  "dep_graph_path": "artifacts/f3f7dfdffa4940d185668190b7a28b05/depgraph/dep_graph.json",
   "mappings": [
     {
-      "before": ["Python/TelemetrySystem/client.py", "Python/TelemetrySystem/telemetry.py", "Python/TelemetrySystem/test_telemetry.py"],
-      "after": ["refactor/telemetry/telemetry.go", "refactor/telemetry/telemetry_test.go"]
+      "before": ["src/old_module.py"],
+      "after": ["src/new_module.go"]
     }
   ]
 }
 ```
 
-### 2. 設定 GCP 認證
+## 3. Agent 呼叫方式
 
-Generate Test 使用 Vertex AI Gemini 2.5 Pro，需要 GCP service account key。
+```python
+# Agent 只需傳 mapping_path（必要）+ use_sandbox（選填）
+result = generate_test.invoke({
+    "mapping_path": "workspace/stage_1/stage_plan/mapping_1.json",
+    "use_sandbox": False,  # True = 使用 Docker 執行
+})
+```
 
-**方法 1：設定環境變數（推薦）**
+## 4. 回傳值
+
+回傳 JSON string，需自行 `json.loads()` 解析：
+
+```json
+// 成功
+{
+  "ok": true,
+  "test_result_dir": "workspace/.../test_result",
+  "summary_path": "workspace/.../test_result/summary.json",
+  "test_records_path": "workspace/.../test_result/test_records.json",
+  "review_path": "workspace/.../test_result/review.json"
+}
+
+// 失敗
+{
+  "ok": false,
+  "error": "Mapping file not found: ..."
+}
+```
+
+## 5. 完整 LangGraph 範例
+
+```python
+from langchain_google_vertexai import ChatVertexAI
+from langgraph.prebuilt import create_react_agent
+from runner.test_gen.pipeline_tool import generate_test
+
+# 建立 agent
+llm = ChatVertexAI(model="gemini-2.0-flash")
+agent = create_react_agent(llm, tools=[generate_test])
+
+# 執行
+response = agent.invoke({
+    "messages": [
+        ("user", "請對 mapping_1.json 執行 characterization testing")
+    ]
+})
+```
+
+## 6. 參數說明
+
+| 參數 | 類型 | 預設值 | 說明 |
+|------|------|--------|------|
+| `mapping_path` | str | (必填) | Mapping JSON 檔案路徑 |
+| `use_sandbox` | bool | `False` | 是否使用 Docker sandbox 執行 |
+| `sandbox_image` | str | `"hack-sandbox:latest"` | Docker image 名稱 |
+
+## 7. 輸出目錄結構
+
+執行後會在 `mapping_path` 同層產生 `test_result/`：
+
+```
+test_result/
+├── golden/           # Stage 1: golden script
+├── test/             # Stage 3: test file
+├── logs/             # Stage 2/4: 執行 log
+├── summary.json      # 統計
+├── test_records.json # golden output + test items
+└── review.json       # semantic diff + 風險評估
+```
+## 9. GCP 認證設定
+
+Generate Test 使用 Vertex AI Gemini，需要 GCP 認證：
 
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your-gcp-key.json"
 ```
 
-**方法 2：修改預設路徑**
-
-編輯 `runner/test_gen/llm_adapter.py:25-26`，將 `_DEFAULT_KEY_PATH` 改成你的 key 檔案路徑：
-
-```python
-_DEFAULT_KEY_PATH = Path("/your/path/to/gcp-key.json")
-```
-
-### 3. 執行測試生成
-
-```bash
-uv run python -m scripts.test_e2e_characterization
-```
-
-**修改 Mapping 檔案**：編輯 `scripts/test_e2e_characterization.py:31`
-
-```python
-MAPPING_FILE = PROJECT_ROOT / "scripts/mapping_1.json"  # 改成你的 mapping
-```
-
-### 4. 查看輸出結果
-
-執行完成後，產出會在：
-
-```
-artifacts/test_result/
-├── summary.json           # 統計摘要（通過率、覆蓋率、build 狀態）
-├── test_records.json      # 完整測試記錄（golden output + test items）
-├── review.json            # LLM 分析（semantic diff + 風險評估）
-├── golden/                # Golden capture 腳本和輸出
-│   └── module_0_golden.py
-└── tests/                 # 生成的測試檔案
-    ├── conftest.py
-    ├── module_0_test.go
-    └── *.log
-```
-
-**輸出 ID 修改**：編輯 `scripts/test_e2e_characterization.py:30`
-
-```python
-RUN_ID = "test_result"  # 改成你想要的名稱
-```
+或修改 `runner/test_gen/llm_adapter.py` 中的 `_DEFAULT_KEY_PATH`。

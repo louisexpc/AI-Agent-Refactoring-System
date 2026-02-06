@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 RUN_ID = "test_result"
-MAPPING_FILE = PROJECT_ROOT / "scripts/mapping_1.json"
-ARTIFACTS_ROOT = PROJECT_ROOT / "artifacts"
+MAPPING_FILE = PROJECT_ROOT / "workspace/stage_1/stage_plan/mapping_1.json"
+WORKSPACE_ROOT = PROJECT_ROOT / "workspace"
 
 
 def load_mapping_config(mapping_file: Path) -> dict:
@@ -113,8 +113,11 @@ def main() -> None:
     logger.info("Creating LLM client (Gemini 2.5 Pro)...")
     llm_client = create_vertex_client()
 
-    # 執行 stage test
-    logger.info("Running stage test with %d module mappings...", len(mappings))
+    # 執行 Stage 1 only（生成測試，不執行）
+    logger.info(
+        "Running Stage 1 (generate tests only) with %d module mappings...",
+        len(mappings),
+    )
     # report is kept for the commented debug code below
     report = run_stage_test(  # noqa: F841
         run_id=RUN_ID,
@@ -123,9 +126,10 @@ def main() -> None:
         stage_mappings=mappings,
         dep_graph=dep_graph,
         llm_client=llm_client,
-        artifacts_root=ARTIFACTS_ROOT,
+        workspace_root=WORKSPACE_ROOT,
         source_language=source_language,
         target_language=target_language,
+        run_tests=False,  # Stage 1 only - 不執行測試
     )
 
     # 印出結果
@@ -174,12 +178,12 @@ def main() -> None:
     print("\n" + "=" * 60)
 
     # 提示產出位置
-    print("\nArtifacts written to:")
-    print(f"  {ARTIFACTS_ROOT / RUN_ID / 'summary.json'}")
-    print(f"  {ARTIFACTS_ROOT / RUN_ID / 'test_records.json'}")
-    print(f"  {ARTIFACTS_ROOT / RUN_ID / 'review.json'}")
-    print(f"  {ARTIFACTS_ROOT / RUN_ID / 'golden/'}")
-    print(f"  {ARTIFACTS_ROOT / RUN_ID / 'tests/'}")
+    print("\nWorkspace output written to:")
+    print(f"  {WORKSPACE_ROOT / 'runs' / RUN_ID / 'test_gen' / 'golden/'}")
+    print(f"  {WORKSPACE_ROOT / 'runs' / RUN_ID / 'test_gen' / 'test/'}")
+    print(f"  {WORKSPACE_ROOT / 'runs' / RUN_ID / 'test_gen' / 'summary.json'}")
+    print(f"  {WORKSPACE_ROOT / 'runs' / RUN_ID / 'test_gen' / 'test_records.json'}")
+    print(f"  {WORKSPACE_ROOT / 'runs' / RUN_ID / 'test_gen' / 'review.json'}")
 
 
 if __name__ == "__main__":
