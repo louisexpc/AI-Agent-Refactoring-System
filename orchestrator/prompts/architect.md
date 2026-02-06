@@ -20,7 +20,7 @@ You have access to the following tools:
    - Input: `mapping_path` - Path to a JSON file containing before/after file mappings
    - The mapping JSON must contain:
      ```json
-     {
+     {{
        "repo_dir": "/workspace/init/<SHA256>/repo",
        "refactored_repo_dir": "/workspace/refactor_repo",
        "dep_graph_path": "/workspace/init/<SHA256>/depgraph/dep_graph.json",
@@ -29,7 +29,7 @@ You have access to the following tools:
        "mappings": [
          {"before": ["/path/to/old/file.py"], "after": ["/path/to/new/file.go"]}
        ]
-     }
+     }}
      ```
    - Returns test results including pass/fail status and coverage
 
