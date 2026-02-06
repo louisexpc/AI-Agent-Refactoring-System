@@ -24,9 +24,13 @@ from shared.ingestion_types import (
 )
 
 try:
-    # tree-sitter 0.20/0.21 has API differences across platforms and packages.
-    # We normalize capture tuples and keep best-effort behavior when parsing fails.
-    from tree_sitter import Language, Parser, Query, QueryCursor
+    # tree-sitter bindings changed across versions; QueryCursor may be absent.
+    from tree_sitter import Language, Parser, Query
+
+    try:  # pragma: no cover - optional in newer tree-sitter
+        from tree_sitter import QueryCursor
+    except ImportError:  # pragma: no cover
+        QueryCursor = None
 except ImportError:  # pragma: no cover
     Language = None
     Parser = None
@@ -52,6 +56,7 @@ LANG_BY_EXT = {
     ".go": "go",
     ".java": "java",
     ".rs": "rust",
+    ".rb": "ruby",
     ".c": "c",
     ".h": "c",
     ".cc": "cpp",
@@ -93,6 +98,11 @@ QUERY_BY_LANG = {
     "rust": """
     (use_declaration) @import_path
     """,
+    "ruby": """
+    (call
+      (identifier) @call_name
+      (argument_list (string) @import_path))
+    """,
     "c": """
     (preproc_include
       path: (string_literal) @import_path)
@@ -114,6 +124,10 @@ PHP_USE_RE = re.compile(r"^\s*use\s+([^;]+);\s*$")
 PHP_INCLUDE_RE = re.compile(
     r"^\s*(include|include_once|require|require_once)\s*\(?\s*['\"]([^'\"]+)['\"]"
 )
+RUBY_REQUIRE_RE = re.compile(
+    r"^\s*(require|require_relative|load)\s*\(?\s*['\"]([^'\"]+)['\"]"
+)
+RUBY_AUTOLOAD_RE = re.compile(r"^\s*autoload\s*\(?\s*[:\w]+\s*,\s*['\"]([^'\"]+)['\"]")
 
 
 @dataclass
@@ -171,6 +185,8 @@ class DepGraphExtractor:
                 )
             )
             if not lang:
+                continue
+            if lang == "markdown":
                 continue
             raw_edges = self._extract_edges(entry.path, lang, errors_path)
             for raw_edge in raw_edges:
@@ -258,8 +274,11 @@ class DepGraphExtractor:
 
         try:
             query = Query(parser.language, query_text)
-            cursor = QueryCursor(query)
-            captures = cursor.captures(tree.root_node)
+            if QueryCursor is not None:
+                cursor = QueryCursor(query)
+                captures = cursor.captures(tree.root_node)
+            else:
+                captures = query.captures(tree.root_node)
         except Exception as exc:  # pragma: no cover
             _write_error(errors_path, rel_path, lang, f"query error: {exc}")
             return _regex_fallback(
@@ -269,6 +288,8 @@ class DepGraphExtractor:
             return _extract_python_edges(rel_path, code, captures)
         if lang in {"javascript", "typescript"}:
             return _extract_js_edges(rel_path, lang, code, captures)
+        if lang == "ruby":
+            return _extract_ruby_edges(rel_path, code, captures)
         return _extract_generic_edges(rel_path, lang, code, captures)
 
 
@@ -335,6 +356,10 @@ def _get_language(lang: str):
         from tree_sitter_rust import language as rust_language
 
         return Language(rust_language())
+    if lang == "ruby":
+        from tree_sitter_ruby import language as ruby_language
+
+        return Language(ruby_language())
     if lang == "c":
         from tree_sitter_c import language as c_language
 
@@ -348,7 +373,7 @@ def _get_language(lang: str):
 
 def _probe_tree_sitter() -> None:
     global _TREE_SITTER_READY, _TREE_SITTER_ERROR
-    if Parser is None or Language is None or Query is None or QueryCursor is None:
+    if Parser is None or Language is None or Query is None:
         _TREE_SITTER_READY = False
         _TREE_SITTER_ERROR = "tree-sitter not available"
         return
@@ -486,6 +511,68 @@ def _extract_js_edges(
     return raw_edges
 
 
+def _extract_ruby_edges(
+    rel_path: str,
+    code: bytes,
+    captures: object,
+) -> list[RawEdge]:
+    text = code.decode("utf-8", errors="ignore")
+    raw_edges: list[RawEdge] = []
+    for node, _name in _iter_captures(captures):
+        node_text = text[node.start_byte : node.end_byte]
+        dst_raw = node_text.strip().strip("\"'")
+        if not dst_raw:
+            continue
+        line_text = _line_text(text, node.start_point[0])
+        match = RUBY_REQUIRE_RE.match(line_text)
+        if match:
+            kind = match.group(1)
+            dst_raw = match.group(2)
+            raw_edges.append(
+                RawEdge(
+                    src=rel_path,
+                    lang="ruby",
+                    ref_kind=DepRefKind.REQUIRE,
+                    dst_raw=dst_raw,
+                    range=_to_range(node),
+                    is_relative=kind == "require_relative",
+                    confidence=0.85,
+                )
+            )
+            continue
+        autoload_match = RUBY_AUTOLOAD_RE.match(line_text)
+        if autoload_match:
+            dst_raw = autoload_match.group(1)
+            raw_edges.append(
+                RawEdge(
+                    src=rel_path,
+                    lang="ruby",
+                    ref_kind=DepRefKind.REQUIRE,
+                    dst_raw=dst_raw,
+                    range=_to_range(node),
+                    confidence=0.8,
+                )
+            )
+    return raw_edges
+
+
+def _clean_include_path(raw_text: str, line_text: str = "") -> str:
+    if line_text:
+        match = re.search(r'^\s*#\s*include\s*[<"]([^">\n]+)[">]', line_text)
+        if match:
+            return match.group(1).strip()
+    match = re.search(r'[<"]([^">\n]+)[">]', raw_text)
+    if match:
+        return match.group(1).strip()
+    candidate = raw_text.splitlines()[0] if raw_text else ""
+    candidate = candidate.strip().strip("\"'<> ")
+    for sep in (">", '"', "'", " ", "\t"):
+        if sep in candidate:
+            candidate = candidate.split(sep, 1)[0]
+            break
+    return candidate.strip()
+
+
 def _extract_generic_edges(
     rel_path: str,
     lang: str,
@@ -501,8 +588,12 @@ def _extract_generic_edges(
         ref_kind = DepRefKind.USE
 
     for node, _name in _iter_captures(captures):
-        dst_raw = text[node.start_byte : node.end_byte]
-        dst_raw = dst_raw.strip().strip("\"'<> ")
+        raw_text = text[node.start_byte : node.end_byte]
+        if lang in {"c", "cpp"}:
+            line_text = _line_text(text, node.start_point[0])
+            dst_raw = _clean_include_path(raw_text, line_text)
+        else:
+            dst_raw = raw_text.strip().strip("\"'<> ")
         if not dst_raw:
             continue
         raw_edges.append(
@@ -807,6 +898,50 @@ def _normalize_edge(
             extras=extras,
         )
 
+    if raw.lang == "ruby":
+        dst_norm = dst_raw
+        if raw.is_relative:
+            is_relative = True
+            resolved = _resolve_ruby_relative(raw.src, dst_raw, file_set)
+            if resolved:
+                dst_kind = DepDstKind.INTERNAL_FILE
+                dst_resolved_path = resolved
+                confidence = min(confidence, 0.8)
+            else:
+                dst_kind = DepDstKind.RELATIVE
+                confidence = min(confidence, 0.5)
+        else:
+            resolved = _resolve_ruby_absolute(dst_raw, file_set, source_roots)
+            if resolved:
+                dst_kind = DepDstKind.INTERNAL_FILE
+                dst_resolved_path = resolved
+                confidence = min(confidence, 0.8)
+            else:
+                dst_kind = DepDstKind.EXTERNAL_PKG
+        dst_kind, dst_resolved_path, confidence = _maybe_infer_internal(
+            raw.src,
+            dst_raw,
+            dst_norm,
+            file_set,
+            dst_kind,
+            dst_resolved_path,
+            confidence,
+        )
+        return DepEdge(
+            src=raw.src,
+            lang=raw.lang,
+            ref_kind=raw.ref_kind,
+            dst_raw=dst_raw,
+            dst_norm=dst_norm,
+            dst_kind=dst_kind,
+            range=raw.range,
+            confidence=confidence,
+            dst_resolved_path=dst_resolved_path,
+            symbol=raw.symbol,
+            is_relative=is_relative,
+            extras=extras,
+        )
+
     resolved_generic = _resolve_generic_absolute(dst_raw, file_set, source_roots)
     if resolved_generic:
         dst_kind = DepDstKind.INTERNAL_FILE
@@ -949,6 +1084,31 @@ def _resolve_js_absolute(
     return None
 
 
+def _resolve_ruby_relative(
+    src_path: str, dst_raw: str, file_set: set[str]
+) -> str | None:
+    src_dir = Path(src_path).parent
+    base = _normalize_posix_path((src_dir / dst_raw).as_posix())
+    candidates = [base, f"{base}.rb", f"{base}/init.rb"]
+    for candidate in candidates:
+        if candidate in file_set:
+            return candidate
+    return None
+
+
+def _resolve_ruby_absolute(
+    dst_raw: str, file_set: set[str], source_roots: list[str]
+) -> str | None:
+    if not source_roots:
+        return None
+    for root in source_roots:
+        base = f"{root}/{dst_raw}"
+        for candidate in (base, f"{base}.rb", f"{base}/init.rb"):
+            if candidate in file_set:
+                return candidate
+    return None
+
+
 def _resolve_generic_absolute(
     dst_raw: str, file_set: set[str], source_roots: list[str]
 ) -> str | None:
@@ -1014,6 +1174,7 @@ def _infer_internal_from_nodes(
                     f"{module_path}.go",
                     f"{module_path}.java",
                     f"{module_path}.rs",
+                    f"{module_path}.rb",
                     f"{module_path}.c",
                     f"{module_path}.h",
                     f"{module_path}.cpp",
@@ -1087,6 +1248,7 @@ def _resolve_by_dir_tree(src_path: str, dst_raw: str, file_set: set[str]) -> str
         f"{base}.go",
         f"{base}.java",
         f"{base}.rs",
+        f"{base}.rb",
         f"{base}.c",
         f"{base}.h",
         f"{base}.cpp",
