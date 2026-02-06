@@ -51,6 +51,24 @@ from shared.test_types import (
 
 logger = logging.getLogger(__name__)
 
+_LOGGING_CONFIGURED = False
+
+
+def _ensure_logging_configured() -> None:
+    """確保 root logger 有基本配置，讓 runner.test_gen.* 的 log 能輸出。"""
+    global _LOGGING_CONFIGURED
+    if _LOGGING_CONFIGURED:
+        return
+
+    root = logging.getLogger()
+    if not root.handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    _LOGGING_CONFIGURED = True
+
 
 # =========================
 # LangGraph Tool
@@ -78,7 +96,7 @@ def generate_test(
 
     Args:
         mapping_path: Path to the mapping JSON file
-            (e.g. "workspace/stage_1/stage_plan/mapping_1.json").
+            (e.g. "workspace/stage_1/run_1/stage_plan/mapping_1_run_1.json").
         use_sandbox: Whether to execute scripts in Docker sandbox.
         sandbox_image: Docker image name for sandbox execution.
 
@@ -87,6 +105,8 @@ def generate_test(
             "summary_path": str, "test_records_path": str,
             "review_path": str, "error": str | null}
     """
+    _ensure_logging_configured()
+
     try:
         from runner.test_gen.llm_adapter import create_vertex_client
 
@@ -98,8 +118,13 @@ def generate_test(
             )
 
         mapping_data = json.loads(mapping_file.read_text(encoding="utf-8"))
-        test_result_dir = str(mapping_file.parent / "test_result")
-        run_id = mapping_file.parent.parent.name  # e.g. "stage_1"
+        # 新結構：workspace/stage_X/run_I/stage_plan/mapping_X_run_I.json
+        # test_result 與 stage_plan 平行，都在 run_I/ 下
+        run_dir = mapping_file.parent.parent  # run_I/
+        test_result_dir = str(run_dir / "test_result")
+        # run_id 組合 stage 和 run index，例如 "stage_1_run_1"
+        stage_dir = run_dir.parent  # stage_X/
+        run_id = f"{stage_dir.name}_{run_dir.name}"  # e.g. "stage_1_run_1"
         llm_client = create_vertex_client()
 
         result = run_characterization_pipeline(
@@ -163,6 +188,8 @@ def run_characterization_pipeline(
             "test_result_dir": str,
         }
     """
+    _ensure_logging_configured()
+
     result_dir = Path(test_result_dir)
     repo = Path(repo_dir)
     refactored_repo = Path(refactored_repo_dir)
@@ -435,6 +462,7 @@ def _process_single_mapping(
 
     test_dir = stage3_result["test_dir"]
     test_file_path = stage3_result["test_file_path"]
+    emitted_test_file = stage3_result.get("emitted_test_file")
 
     # Stage 4: Docker 執行 test（如果使用 sandbox）
     test_result: UnitTestResult | None = None
@@ -521,7 +549,7 @@ def _process_single_mapping(
     return CharacterizationRecord(
         module_mapping=mapping,
         golden_records=golden_records,
-        emitted_test_file=None,  # TODO: 從 stage3_result 取得
+        emitted_test_file=emitted_test_file,
         test_result=test_result,
         coverage_pct=test_result.coverage_pct if test_result else None,
         tested_functions=tested_functions,
