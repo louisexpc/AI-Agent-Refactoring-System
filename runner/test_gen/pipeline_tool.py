@@ -51,6 +51,25 @@ from shared.test_types import (
 
 logger = logging.getLogger(__name__)
 
+_LOGGING_CONFIGURED = False
+
+
+def _ensure_logging_configured() -> None:
+    """確保 root logger 有基本配置，讓 runner.test_gen.* 的 log 能輸出。"""
+    global _LOGGING_CONFIGURED
+    if _LOGGING_CONFIGURED:
+        return
+
+    root = logging.getLogger()
+    # 只在 root logger 沒有 handler 時才配置（避免覆蓋外部配置）
+    if not root.handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    _LOGGING_CONFIGURED = True
+
 
 # =========================
 # LangGraph Tool
@@ -87,6 +106,8 @@ def generate_test(
             "summary_path": str, "test_records_path": str,
             "review_path": str, "error": str | null}
     """
+    _ensure_logging_configured()
+
     try:
         from runner.test_gen.llm_adapter import create_vertex_client
 
@@ -163,6 +184,8 @@ def run_characterization_pipeline(
             "test_result_dir": str,
         }
     """
+    _ensure_logging_configured()
+
     result_dir = Path(test_result_dir)
     repo = Path(repo_dir)
     refactored_repo = Path(refactored_repo_dir)
