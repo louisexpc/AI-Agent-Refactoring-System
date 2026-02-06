@@ -78,8 +78,8 @@ def _ensure_logging_configured() -> None:
 @tool
 def generate_test(
     mapping_path: str,
-    use_sandbox: bool = True,
-    sandbox_image: str = "hack-sandbox:latest",
+    use_sandbox: bool = False,
+    sandbox_image: str = "refactor-sandbox:latest",
 ) -> str:
     """Runs the 5-stage characterization testing pipeline for a refactoring stage.
 
@@ -162,7 +162,7 @@ def run_characterization_pipeline(
     llm_client: Any,
     source_language: str = "python",
     target_language: str = "python",
-    sandbox_image: str = "hack-sandbox:latest",
+    sandbox_image: str = "refactor-sandbox:latest",
     use_sandbox: bool = True,
 ) -> dict[str, Any]:
     """完整的 5-Stage characterization testing pipeline。

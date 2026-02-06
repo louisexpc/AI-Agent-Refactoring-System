@@ -89,7 +89,7 @@ def main() -> None:
         llm_client=llm_client,
         source_language=mapping_data["source_language"],
         target_language=mapping_data["target_language"],
-        sandbox_image="hack-sandbox:latest",
+        sandbox_image="refactor-sandbox:latest",
         use_sandbox=False,  # 不使用 Docker，只生成檔案
     )
 
