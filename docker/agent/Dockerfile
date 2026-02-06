@@ -28,5 +28,5 @@ RUN uv sync --frozen --no-python-downloads
 
 VOLUME ["/workspace"]
 
-CMD ["uv", "run", "python", "orchestrator/test.py"]
+CMD ["uv", "run", "python", "orchestrator/agent_tool_workflow.py"]
 # CMD ['bash']
