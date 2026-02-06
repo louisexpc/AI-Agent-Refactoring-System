@@ -61,7 +61,6 @@ def _ensure_logging_configured() -> None:
         return
 
     root = logging.getLogger()
-    # 只在 root logger 沒有 handler 時才配置（避免覆蓋外部配置）
     if not root.handlers:
         logging.basicConfig(
             level=logging.INFO,
