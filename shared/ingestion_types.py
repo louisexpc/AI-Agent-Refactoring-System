@@ -30,7 +30,7 @@ class ArtifactRef(BaseModel):
     """Artifact 的最小參考資訊。"""
 
     name: str = Field(..., description="Artifact 名稱（如 repo_index）。")
-    path: str = Field(..., description="Artifact 相對路徑（相對於 run 目錄）。")
+    path: str = Field(..., description="本地絕對路徑")
     mime: str | None = Field(default=None, description="MIME type（可為 null）。")
     size: int | None = Field(default=None, description="檔案大小（bytes）。")
     sha256: str | None = Field(default=None, description="檔案內容 SHA-256。")
@@ -341,8 +341,8 @@ class RunRecord(BaseModel):
     start_prompt: str | None = Field(default=None, description="啟動提示字串。")
     created_at: datetime = Field(..., description="建立時間。")
     updated_at: datetime = Field(..., description="最後更新時間。")
-    artifacts: list[ArtifactRef] = Field(
-        default_factory=list, description="已產生的 artifacts 參考。"
+    artifacts: dict[str, list[ArtifactRef]] = Field(
+        default_factory=dict, description="已產生的 artifacts 參考。"
     )
     scopes: list[ScopeCandidate] = Field(
         default_factory=list, description="scope candidates 列表。"

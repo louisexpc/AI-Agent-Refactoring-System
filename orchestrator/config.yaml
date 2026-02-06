@@ -1,0 +1,54 @@
+# multi_agent orchestrator config (MVP)
+# 以 config.yaml 所在資料夾 orchestrator/ 當 base，
+# ".." 會 resolve 成 repo root/
+working_directory: ".."
+ingest_url: "http://repo_ingestion:8000/ingestion/runs"
+repo_url: "https://github.com/emilybache/Racing-Car-Katas.git"
+
+llm:
+  architect:
+    model: "gemini-2.5-pro"
+    project: "tsmchaker"
+    location: "global"
+    temperature: 0
+  engineer:
+    model: "gemini-2.5-pro"
+    project: "tsmchaker"
+    location: "global"
+    temperature: 0
+
+prompts:
+  architect: "prompts/architect.md"
+  engineer: "prompts/engineer.md"
+
+# 下面這兩個路徑，是「相對於 working_directory（repo root）」的邏輯路徑
+source_dir: "7660381d8c2d45ecba6f0532fba71052"
+# repo_dir: "./caa0ea0651474be18c2f4c265c32b9eb"
+target_dir: "refactor_repo"
+
+
+# This template is rendered via Python .format() with:
+# {working_directory}, {source_dir}, {target_dir}, {repo_dir}
+user_input_template: >
+  # Task: Multi-Stage Refactoring from Python to Go
+
+  Refactor the Python code file under the `{working_directory}/workspace/init/{source_dir}/snapshot/repo` folder into Go.
+  ## Phase 1: Initial Analysis & Specification
+  Before performing any planning or modification tasks, you MUST first read and reason over two JSON files
+  1. `{working_directory}/workspace/init/{source_dir}/depgraph/dep_graph_light.json`
+  2. `{working_directory}/workspace/init/{source_dir}/depgraph/dep_reverse_index_light.json`
+ 
+
+  Analyze the project structure and dependencies to generate a `spec.md` in the `{working_directory}/workspace/init/plan` directory.
+  
+  ## Phase 2: Execution via Subagent (Stage-by-Stage)
+  Call the refactor tool  to perform the refactoring in sequential stages. For every new stage (Stage X), the tool MUST follow this protocol before modifying any code:
+
+  1. **Information Gathering:** Read the current target Python code, the project `spec.md`, and the "Stage Output Report" from the previous stage (if applicable).
+  2. **Detailed Planning:** Generate a detailed execution plan.
+  3. **Module Mapping:** Generate a JSON file for the current stage .
+  4. **Implementation:** Proceed with the code modifications only after the planning artifacts are created.
+  5. **IMPORTANT:** Do the next stage until all stages are complete
+
+# Logger output file (created under working_directory)
+log_filename: "multi_agent.log"
