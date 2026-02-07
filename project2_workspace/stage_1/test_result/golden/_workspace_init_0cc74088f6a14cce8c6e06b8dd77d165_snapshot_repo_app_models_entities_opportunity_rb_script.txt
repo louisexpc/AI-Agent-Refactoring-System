@@ -1,0 +1,334 @@
+An important note on the testing approach: The `Opportunity` model is an `ActiveRecord` model, deeply integrated with a database, associated models, and external gems (concerns). A true characterization would require a fully configured Rails environment.
+
+This script simulates that environment by:
+1.  **Mocking `ActiveRecord::Base`:** A mock version is provided that mimics key behaviors like `scope`, `validate`, `belongs_to`, callbacks, and attribute handling. It does not interact with a database.
+2.  **Mocking Associated Models:** All dependent models (`User`, `Account`, `Campaign`, etc.) are defined as simple mock classes.
+3.  **Mocking Concerns:** Methods added by gems (`acts_as_taggable`, `has_paper_trail`, etc.) are defined as empty stubs to allow the `Opportunity` class to load without errors.
+4.  **Capturing Queries:** Scope methods are tested by calling them and inspecting the "query" they build. The mock `ActiveRecord::Relation` object stores the sequence of calls (e.g., `where`, `order`) for verification.
+5.  **Isolating Logic:** Business logic methods (`weighted_amount`) and complex orchestration methods (`save_with_account_and_permissions`) are tested by creating in-memory instances and stubbing external calls.
+
+This approach focuses on the logic *within* the `Opportunity.rb` file itself, providing a behavioral snapshot under controlled, simulated conditions.
+
+```ruby
+require 'json'
+require 'ostruct'
+
+# --- Mocking Infrastructure ---
+
+# Mock global Setting object
+class MockSettings
+  def initialize
+    @settings = {}
+  end
+
+  def [](key)
+    @settings[key]
+  end
+
+  def []=(key, value)
+    @settings[key] = value
+  end
+
+  def unroll(key, default = [])
+    @settings[key] || default
+  end
+
+  def try(method)
+    # A simplified 'try' for this context
+    if method == :to_s && @settings[:opportunity_default_stage]
+      @settings[:opportunity_default_stage].to_s
+    else
+      nil
+    end
+  end
+end
+Setting = MockSettings.new
+
+# Mock ActiveRecord::Base and its query interface
+module ActiveRecord
+  class Relation
+    attr_reader :klass, :query_parts
+
+    def initialize(klass)
+      @klass = klass
+      @query_parts = []
+    end
+
+    def where(conditions)
+      @query_parts << { type: :where, conditions: conditions.is_a?(Array) ? conditions.join(', ') : conditions }
+      self
+    end
+
+    def order(ordering)
+      @query_parts << { type: :order, ordering: ordering }
+      self
+    end
+
+    def select(fields)
+      @query_parts << { type: :select, fields: fields }
+      self
+    end
+
+    def result
+      # For ransack
+      self
+    end
+
+    def distinct
+      @query_parts << { type: :distinct }
+      self
+    end
+
+    def to_a
+      [] # Return empty array for tests that iterate
+    end
+  end
+
+  class Base
+    attr_accessor :id, :attributes, :new_record
+    attr_reader :errors
+
+    @@_callbacks = Hash.new { |h, k| h[k] = [] }
+    @@_associations = Hash.new { |h, k| h[k] = [] }
+    @@_validators = Hash.new { |h, k| h[k] = [] }
+
+    def initialize(attrs = {})
+      @attributes = attrs.transform_keys(&:to_s)
+      @id = @attributes['id']
+      @errors = OpenStruct.new(messages: {}, add: ->(field, msg) { self.errors.messages[field] ||= []; self.errors.messages[field] << msg }, empty?: -> { self.errors.messages.empty? })
+      @new_record = true
+      # Dynamically create accessors for all possible attributes
+      self.class.column_names.each do |col|
+        self.class.attr_accessor col unless respond_to? col
+        instance_variable_set("@#{col}", @attributes[col.to_s])
+      end
+    end
+
+    def self.column_names
+      @column_names ||= %i[
+        id user_id campaign_id assigned_to name access source stage probability amount
+        discount closes_on deleted_at created_at updated_at background_info subscribed_users
+      ].map(&:to_s)
+    end
+
+    def [](key)
+      instance_variable_get("@#{key}")
+    end
+
+    def []=(key, value)
+      instance_variable_set("@#{key}", value)
+      @attributes[key.to_s] = value
+    end
+
+    def self.scope(name, body)
+      define_singleton_method(name) do |*args|
+        # In AR, scopes can be chained. We simulate this by returning a Relation object
+        # that gets modified by the scope's lambda.
+        relation = Relation.new(self)
+        result = relation.instance_exec(*args, &body)
+        # If the block returns a relation (e.g. from `where`), use it. Otherwise, assume it modified `relation`.
+        result.is_a?(Relation) ? result : relation
+      end
+    end
+
+    def self.ransack(query)
+      Relation.new(self).tap { |r| r.query_parts << { type: :ransack, query: query } }
+    end
+
+    def save
+      is_new = @new_record
+      return false unless valid?
+      
+      self.class.get_callbacks(:create).each { |cb| send(cb) } if is_new
+      @new_record = false
+      true
+    end
+    
+    def save_with_model_permissions(model)
+      save
+    end
+
+    def update_attribute(attr, val)
+      send("#{attr}=", val)
+    end
+
+    def valid?
+      @errors.messages.clear
+      self.class.get_validators.each { |v| v.call(self) }
+      @errors.empty?
+    end
+
+    def self.get_validators; @@_validators[self] ||= []; end
+    def self.validate(method_name, **_opts); get_validators << ->(record) { record.send(method_name) }; end
+    def self.validates_presence_of(*attrs, **opts); get_validators << ->(record) { attrs.each { |a| record.errors.add(a, opts[:message] || :blank) if record.send(a).to_s.empty? } }; end
+    def self.validates_numericality_of(*attrs, **opts); get_validators << ->(record) { attrs.each { |a| record.errors.add(a, :not_a_number) if record.send(a) && (!record.send(a).is_a?(Numeric) || (opts[:allow_nil] && record.send(a).nil?)) } }; end
+    def self.validates(field, opts)
+      if opts[:inclusion]
+        get_validators << ->(record) {
+          val = record.send(field)
+          return if opts[:allow_blank] && (val.nil? || val.to_s.empty?)
+          allowed_values = opts[:inclusion][:in].is_a?(Proc) ? opts[:inclusion][:in].call : opts[:inclusion][:in]
+          record.errors.add(field, :inclusion) unless allowed_values.include?(val)
+        }
+      end
+    end
+
+    def self.belongs_to(name, **_opts); @@_associations[self] << { type: :belongs_to, name: name }; attr_accessor name; end
+    def self.has_one(name, **_opts); @@_associations[self] << { type: :has_one, name: name }; attr_accessor name; end
+    def self.has_many(name, *args); @@_associations[self] << { type: :has_many, name: name }; attr_accessor name; end
+    def self.after_create(method); @@_callbacks[self] << { hook: :create, method: method }; end
+    def self.after_destroy(method); @@_callbacks[self] << { hook: :destroy, method: method }; end
+    def self.get_callbacks(hook); @@_callbacks[self].select { |c| c[:hook] == hook }.map { |c| c[:method] }; end
+    def self.find(id); new(id: id); end
+
+    # --- Concern Stubs ---
+    def self.serialize(*_args); end
+    def self.uses_user_permissions; end
+    def self.acts_as_commentable; end
+    def self.uses_comment_extensions; end
+    def self.acts_as_taggable_on(*_args); end
+    def self.has_paper_trail(*_args); end
+    def self.has_fields; end
+    def self.exportable; end
+    def self.sortable(*_args); end
+    def self.has_ransackable_associations(*_args); end
+    def self.ransack_can_autocomplete; end
+    
+    def name?; !self.name.to_s.empty?; end
+    def permissions; @permissions ||= []; end
+    def destroy; self.class.get_callbacks(:destroy).each { |cb| send(cb) }; end
+  end
+end
+
+# --- Mock Dependent Models ---
+class User < ActiveRecord::Base; end
+class Campaign < ActiveRecord::Base
+  def self.increment_counter(_counter, _id); end
+  def self.decrement_counter(_counter, _id); end
+end
+class Account < ActiveRecord::Base
+  def self.create_or_select_for(_model, params); new(params); end
+end
+class AccountOpportunity < ActiveRecord::Base; end
+class Contact < ActiveRecord::Base; end
+class ContactOpportunity < ActiveRecord::Base; end
+class Task < ActiveRecord::Base; end
+class Email < ActiveRecord::Base; end
+class Version < ActiveRecord::Base; end
+module ActiveSupport; def self.run_load_hooks(*_args); end; end
+
+# --- Load the actual class ---
+require_relative '/workspace/init/0cc74088f6a14cce8c6e06b8dd77d165/snapshot/repo/app/models/entities/opportunity.rb'
+
+# --- Characterization Script ---
+
+results = {}
+
+# --- Instance Methods ---
+results['Opportunity_weighted_amount_standard'] = Opportunity.new(amount: 1000.0, discount: 100.0, probability: 50).weighted_amount
+results['Opportunity_weighted_amount_nil_discount'] = Opportunity.new(amount: 1000.0, discount: nil, probability: 50).weighted_amount
+results['Opportunity_weighted_amount_nil_probability'] = Opportunity.new(amount: 1000.0, discount: 100.0, probability: nil).weighted_amount
+results['Opportunity_weighted_amount_nil_amount'] = Opportunity.new(amount: nil, discount: 100.0, probability: 50).weighted_amount
+results['Opportunity_weighted_amount_negative_result'] = Opportunity.new(amount: 100.0, discount: 1000.0, probability: 100).weighted_amount
+results['Opportunity_weighted_amount_zeros'] = Opportunity.new(amount: 0, discount: 0, probability: 0).weighted_amount
+
+# Opportunity_save_with_account_and_permissions
+begin
+  account_calls = []
+  Account.define_singleton_method(:create_or_select_for) { |*args| account_calls << args; Account.new(id: 42, name: args[1][:name]) }
+  Campaign.define_singleton_method(:find) { |id| Campaign.new(id: id) }
+  Contact.define_singleton_method(:find) { |id| Contact.new(id: id) }
+
+  opp_save = Opportunity.new(name: 'New Deal')
+  opp_save.contacts = []
+  params = { account: { id: '', name: 'New Co' }, campaign: '123', contact: '456' }
+  opp_save.save_with_account_and_permissions(params)
+
+  results['Opportunity_save_with_account_and_permissions_flow'] = {
+    account_create_or_select_called_with_name: account_calls.dig(0, 1, :name),
+    account_id: opp_save.account&.id,
+    campaign_id: opp_save.campaign&.id,
+    contact_ids: opp_save.contacts.map(&:id)
+  }
+ensure
+  Account.define_singleton_method(:create_or_select_for) { |_m, p| Account.new(p) }
+  Campaign.define_singleton_method(:find) { |id| Campaign.new(id: id) }
+  Contact.define_singleton_method(:find) { |id| Contact.new(id: id) }
+end
+
+# Opportunity_update_with_account_and_permissions
+opp_update = Opportunity.new(id: 1, name: 'Old Deal', access: 'Public', account: Account.new(id: 10, name: 'Old Account'))
+params = { opportunity: { name: 'Updated Deal', access: 'Private' }, account: { id: '', name: 'New Account Inc.' } }
+opp_update.update_with_account_and_permissions(params)
+results['Opportunity_update_with_account_and_permissions_new_account'] = { name: opp_update.name, access: opp_update.access, account_id: opp_update.account.id, account_name: opp_update.account.name }
+
+opp_update2 = Opportunity.new(id: 2, name: 'Another Deal', account: Account.new(id: 11, name: 'Some Account'))
+params2 = { account: { id: '', name: '' } }
+opp_update2.update_with_account_and_permissions(params2)
+results['Opportunity_update_with_account_and_permissions_unassociate_account'] = { account_is_nil: opp_update2.account.nil? }
+
+# Opportunity_attach_discard
+opp_attach = Opportunity.new(id: 1, contacts: [], tasks: [], contact_ids: [])
+contact = Contact.new(id: 101); task = Task.new(id: 202)
+opp_attach.attach!(contact); opp_attach.attach!(task)
+results['Opportunity_attach'] = { contact_ids: opp_attach.contacts.map(&:id), task_ids: opp_attach.tasks.map(&:id) }
+
+task_discard_calls = []
+task.define_singleton_method(:update_attribute) { |*args| task_discard_calls << args }
+opp_attach.discard!(task)
+contact_discard_calls = []
+opp_attach.contacts.define_singleton_method(:delete) { |*args| contact_discard_calls << args.map(&:id) }
+opp_attach.discard!(contact)
+results['Opportunity_discard'] = { task_update_calls: task_discard_calls, contact_delete_calls: contact_discard_calls }
+
+# --- Class Methods ---
+results['Opportunity_per_page'] = Opportunity.per_page
+Setting[:opportunity_default_stage] = 'analysis'
+results['Opportunity_default_stage_with_setting'] = Opportunity.default_stage
+Setting[:opportunity_default_stage] = nil
+results['Opportunity_default_stage_without_setting'] = Opportunity.default_stage
+
+# --- Validations ---
+Setting.unroll(:opportunity_stage, [['prospecting', 'prospecting'], ['analysis', 'analysis']])
+opp_val = Opportunity.new(name: '')
+opp_val.valid?; results['Opportunity_validation_name_presence'] = opp_val.errors.messages[:name]
+opp_val = Opportunity.new(name: 'Test', probability: 'abc', amount: 'def')
+opp_val.valid?; results['Opportunity_validation_numericality'] = opp_val.errors.messages.slice(:probability, :amount)
+opp_val = Opportunity.new(name: 'Test', stage: 'invalid_stage')
+opp_val.valid?; results['Opportunity_validation_stage_inclusion_fail'] = opp_val.errors.messages[:stage]
+opp_val.stage = 'analysis'
+opp_val.valid?; results['Opportunity_validation_stage_inclusion_pass'] = opp_val.errors.messages[:stage].nil?
+opp_val = Opportunity.new(name: 'Test', access: 'Shared'); opp_val.permissions.clear
+opp_val.valid?; results['Opportunity_validation_users_for_shared_access_fail'] = opp_val.errors.messages[:access]
+opp_val.permissions << User.new(id: 1)
+opp_val.valid?; results['Opportunity_validation_users_for_shared_access_pass'] = opp_val.errors.messages[:access].nil?
+
+# --- Callbacks ---
+campaign_calls = []
+Campaign.define_singleton_method(:increment_counter) { |*args| campaign_calls << { m: :inc, a: args } }
+Campaign.define_singleton_method(:decrement_counter) { |*args| campaign_calls << { m: :dec, a: args } }
+opp_cb = Opportunity.new(name: 'cb test', campaign_id: 999)
+Opportunity.get_callbacks(:create).each { |cb| opp_cb.send(cb) }
+results['Opportunity_callback_after_create'] = campaign_calls.dup
+campaign_calls.clear
+Opportunity.get_callbacks(:destroy).each { |cb| opp_cb.send(cb) }
+results['Opportunity_callback_after_destroy'] = campaign_calls.dup
+
+# --- Scopes ---
+results['Opportunity_scope_state'] = Opportunity.state(['prospecting', 'won']).query_parts
+results['Opportunity_scope_state_with_other'] = Opportunity.state(['prospecting', 'other']).query_parts
+results['Opportunity_scope_created_by'] = Opportunity.created_by(User.new(id: 123)).query_parts
+results['Opportunity_scope_assigned_to'] = Opportunity.assigned_to(User.new(id: 456)).query_parts
+results['Opportunity_scope_won'] = Opportunity.won.query_parts
+results['Opportunity_scope_lost'] = Opportunity.lost.query_parts
+results['Opportunity_scope_not_lost'] = Opportunity.not_lost.query_parts
+results['Opportunity_scope_pipeline'] = Opportunity.pipeline.query_parts
+results['Opportunity_scope_unassigned'] = Opportunity.unassigned.query_parts
+results['Opportunity_scope_weighted_sort'] = Opportunity.weighted_sort.query_parts
+results['Opportunity_scope_text_search_numeric'] = Opportunity.text_search('12345').query_parts
+results['Opportunity_scope_text_search_string'] = Opportunity.text_search('query').query_parts
+results['Opportunity_scope_visible_on_dashboard'] = Opportunity.visible_on_dashboard(User.new(id: 789)).query_parts
+results['Opportunity_scope_by_closes_on'] = Opportunity.by_closes_on.query_parts
+results['Opportunity_scope_by_amount'] = Opportunity.by_amount.query_parts
+
+puts JSON.dump(results)

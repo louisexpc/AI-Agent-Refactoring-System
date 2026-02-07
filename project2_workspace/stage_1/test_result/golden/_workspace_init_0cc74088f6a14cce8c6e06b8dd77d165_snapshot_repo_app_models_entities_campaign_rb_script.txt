@@ -1,0 +1,387 @@
+# frozen_string_literal: true
+
+require 'json'
+require 'active_record'
+require 'sqlite3'
+require 'ostruct'
+require 'date'
+
+# --- MOCK FRAMEWORK START ---
+
+# Mock external gems and dependencies that are not available in the sandbox
+# This allows the Campaign class to be loaded and its own logic tested in isolation.
+
+module MockMacros
+  def self.included(base)
+    base.extend ClassMethods
+  end
+
+  module ClassMethods
+    def acts_as_commentable; end
+    def uses_comment_extensions; end
+    def acts_as_taggable_on(*_args); end
+    def has_paper_trail(*_args); end
+    def uses_user_permissions; end
+    def exportable; end
+    def sortable(*_args); end
+    def has_fields; end
+    def has_ransackable_associations(*_args); end
+    def ransack_can_autocomplete; end
+
+    # Simplified mock for Ransack to handle the `text_search` scope
+    def ransack(params = {})
+      query = params['name_cont']
+      relation = all
+      relation = relation.where("name LIKE ?", "%#{query}%") if query
+      # Ransack returns a search object that has a `result` method
+      OpenStruct.new(result: relation)
+    end
+
+    # The `serialize` method in older Rails/ActiveRecord versions had a different signature.
+    # The source code uses `serialize :name, type: Klass`, which is a custom Rails patch.
+    # We replicate this behavior to allow the class to load.
+    alias_method :original_serialize, :serialize
+    def serialize(attr_name, class_name_or_coder = Object, **kwargs)
+      klass = kwargs.fetch(:type, class_name_or_coder)
+      original_serialize(attr_name, klass)
+    end
+  end
+end
+
+ActiveRecord::Base.include MockMacros
+
+# Mock the Setting class used for status validation
+class Setting
+  def self.unroll(key)
+    if key == :campaign_status
+      [['Planned', 'Planned'], ['In Progress', 'In Progress'], ['Complete', 'Complete'], ['On Hold', 'On Hold']]
+    else
+      []
+    end
+  end
+end
+
+# Mock the ActiveSupport hooks mechanism
+module ActiveSupport
+  def self.run_load_hooks(*_args); end
+end
+
+# --- MOCK FRAMEWORK END ---
+
+# --- DATABASE SETUP START ---
+
+ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
+
+ActiveRecord::Schema.define do
+  # Main table for the class under test
+  create_table :campaigns do |t|
+    t.integer :user_id
+    t.integer :assigned_to
+    t.string :name, limit: 64, default: '', null: false
+    t.string :access, limit: 8, default: 'Public'
+    t.string :status, limit: 64
+    t.decimal :budget, precision: 12, scale: 2
+    t.integer :target_leads
+    t.float :target_conversion
+    t.decimal :target_revenue, precision: 12, scale: 2
+    t.integer :leads_count, default: 0
+    t.integer :opportunities_count, default: 0
+    t.decimal :revenue, precision: 12, scale: 2
+    t.date :starts_on
+    t.date :ends_on
+    t.text :objectives
+    t.datetime :deleted_at
+    t.datetime :created_at
+    t.datetime :updated_at
+    t.string :background_info, limit: 255
+    t.text :subscribed_users # Serialized array
+  end
+
+  # Tables for associated models required by the Campaign class
+  create_table :users do |t|
+    t.string :username
+  end
+
+  create_table :tasks do |t|
+    t.string :name
+    t.integer :asset_id
+    t.string :asset_type
+  end
+
+  create_table :leads do |t|
+    t.string :name
+    t.integer :campaign_id
+  end
+
+  create_table :opportunities do |t|
+    t.string :name
+    t.integer :campaign_id
+  end
+
+  create_table :emails do |t|
+    t.integer :mediator_id
+    t.string :mediator_type
+  end
+
+  # Tables for mocked gems/concerns to allow associations to resolve
+  create_table :permissions do |t|
+    t.integer :user_id
+    t.integer :asset_id
+    t.string :asset_type
+  end
+
+  create_table :comments do |t|
+    t.integer :commentable_id
+    t.string :commentable_type
+  end
+
+  create_table :tags do |t|
+    t.string :name
+  end
+
+  create_table :taggings do |t|
+    t.integer :tag_id
+    t.integer :taggable_id
+    t.string :taggable_type
+  end
+  
+  create_table :versions do |t| end
+  create_table :fields do |t| end
+end
+
+# --- DATABASE SETUP END ---
+
+# --- MODEL DEFINITIONS START ---
+
+# Define the models for all associations used by the Campaign class.
+class User < ActiveRecord::Base; end
+
+class Task < ActiveRecord::Base
+  belongs_to :asset, polymorphic: true, optional: true
+end
+
+class Lead < ActiveRecord::Base
+  belongs_to :campaign, optional: true
+  # Mock methods called by Campaign#attach!/discard! via `send`
+  def increment_leads_count; end
+  def decrement_leads_count; end
+end
+
+class Opportunity < ActiveRecord::Base
+  belongs_to :campaign, optional: true
+  # Mock methods called by Campaign#attach!/discard! via `send`
+  def increment_opportunities_count; end
+  def decrement_opportunities_count; end
+end
+
+class Permission < ActiveRecord::Base
+  belongs_to :user
+  belongs_to :asset, polymorphic: true
+end
+
+class Email < ActiveRecord::Base
+  belongs_to :mediator, polymorphic: true, optional: true
+end
+
+# Load the actual class file now that the environment is prepared.
+require '/workspace/init/0cc74088f6a14cce8c6e06b8dd77d165/snapshot/repo/app/models/entities/campaign.rb'
+
+# Inject a `permissions` method required by the `users_for_shared_access` validation.
+# This mimics the behavior of the `uses_user_permissions` concern.
+module MockPermissions
+  def permissions
+    Permission.where(asset: self)
+  end
+end
+Campaign.include MockPermissions
+
+# --- MODEL DEFINITIONS END ---
+
+# --- CHARACTERIZATION SCRIPT START ---
+
+def ar_to_hash(record)
+  record ? record.attributes.except('created_at', 'updated_at') : nil
+end
+
+def errors_to_hash(errors)
+  errors.to_hash(full_messages: true)
+end
+
+results = {}
+
+# Use a transaction to keep the database clean
+ActiveRecord::Base.transaction do
+  # --- Setup test data ---
+  user1 = User.create!(username: 'user1')
+  user2 = User.create!(username: 'user2')
+
+  # --- Class Method Tests ---
+  results['Campaign_per_page_value'] = Campaign.per_page
+
+  # --- Validation Tests ---
+  # Name validation
+  c_no_name = Campaign.new(name: nil)
+  c_no_name.valid?
+  results['Campaign_validation_name_presence_nil'] = { valid: c_no_name.valid?, errors: errors_to_hash(c_no_name.errors) }
+
+  c_empty_name = Campaign.new(name: '')
+  c_empty_name.valid?
+  results['Campaign_validation_name_presence_empty'] = { valid: c_empty_name.valid?, errors: errors_to_hash(c_empty_name.errors) }
+
+  # Name uniqueness
+  Campaign.create!(name: 'Unique Campaign', user_id: user1.id)
+  c_dup_name = Campaign.new(name: 'Unique Campaign', user_id: user1.id)
+  c_dup_name.valid?
+  results['Campaign_validation_name_uniqueness_same_user'] = { valid: c_dup_name.valid?, errors: errors_to_hash(c_dup_name.errors) }
+
+  c_diff_user = Campaign.new(name: 'Unique Campaign', user_id: user2.id)
+  c_diff_user.valid?
+  results['Campaign_validation_name_uniqueness_different_user'] = { valid: c_diff_user.valid?, errors: errors_to_hash(c_diff_user.errors) }
+
+  # Dates validation
+  c_bad_dates = Campaign.new(name: 'Bad Dates', starts_on: Date.parse('2023-01-02'), ends_on: Date.parse('2023-01-01'))
+  c_bad_dates.valid?
+  results['Campaign_validation_dates_invalid_sequence'] = { valid: c_bad_dates.valid?, errors: errors_to_hash(c_bad_dates.errors) }
+
+  c_good_dates = Campaign.new(name: 'Good Dates', starts_on: Date.parse('2023-01-01'), ends_on: Date.parse('2023-01-02'))
+  c_good_dates.valid?
+  results['Campaign_validation_dates_valid_sequence'] = { valid: c_good_dates.valid?, errors: errors_to_hash(c_good_dates.errors) }
+
+  c_same_dates = Campaign.new(name: 'Same Dates', starts_on: Date.parse('2023-01-01'), ends_on: Date.parse('2023-01-01'))
+  c_same_dates.valid?
+  results['Campaign_validation_dates_same_day'] = { valid: c_same_dates.valid?, errors: errors_to_hash(c_same_dates.errors) }
+
+  # Status validation
+  c_valid_status = Campaign.new(name: 'Valid Status', status: 'Planned')
+  c_valid_status.valid?
+  results['Campaign_validation_status_valid'] = { valid: c_valid_status.valid?, errors: errors_to_hash(c_valid_status.errors) }
+
+  c_invalid_status = Campaign.new(name: 'Invalid Status', status: 'NonExistentStatus')
+  c_invalid_status.valid?
+  results['Campaign_validation_status_invalid'] = { valid: c_invalid_status.valid?, errors: errors_to_hash(c_invalid_status.errors) }
+
+  c_blank_status = Campaign.new(name: 'Blank Status', status: nil)
+  c_blank_status.valid?
+  results['Campaign_validation_status_blank_is_allowed'] = { valid: c_blank_status.valid?, errors: errors_to_hash(c_blank_status.errors) }
+
+  # Shared access validation
+  c_shared_no_users = Campaign.new(name: 'Shared No Users', access: 'Shared')
+  c_shared_no_users.valid?
+  results['Campaign_validation_shared_access_no_users'] = { valid: c_shared_no_users.valid?, errors: errors_to_hash(c_shared_no_users.errors) }
+  
+  c_shared_with_users = Campaign.create!(name: 'Shared With Users', access: 'Shared')
+  c_shared_with_users.permissions.create!(user: user1)
+  c_shared_with_users.valid?
+  results['Campaign_validation_shared_access_with_users'] = { valid: c_shared_with_users.valid?, errors: errors_to_hash(c_shared_with_users.errors) }
+
+  c_public = Campaign.new(name: 'Public', access: 'Public')
+  c_public.valid?
+  results['Campaign_validation_shared_access_public'] = { valid: c_public.valid?, errors: errors_to_hash(c_public.errors) }
+  
+  # --- Serialization Test ---
+  subscribed = [1, 5, 'user_abc']
+  c_serialized = Campaign.create!(name: 'Serialization Test', subscribed_users: subscribed)
+  c_serialized.reload
+  results['Campaign_serialization_subscribed_users'] = {
+    stored: c_serialized.subscribed_users,
+    is_array: c_serialized.subscribed_users.is_a?(Array),
+    matches_input: c_serialized.subscribed_users == subscribed
+  }
+
+  # --- Scope Tests ---
+  Campaign.create!(name: 'Scope A', user: user1, assigned_to: user2.id, status: 'Planned')
+  Campaign.create!(name: 'Scope B', user: user2, assigned_to: user1.id, status: 'Complete')
+  Campaign.create!(name: 'Scope C', user: user1, assigned_to: user1.id, status: 'Planned')
+  Campaign.create!(name: 'Scope D', user: user2, assigned_to: user2.id, status: 'Other', name: "find_me")
+  Campaign.create!(name: 'Scope E', user: user1, assigned_to: user2.id, status: nil)
+
+  results['Campaign_scope_state'] = Campaign.state(%w[Planned Complete]).order(:name).pluck(:name)
+  results['Campaign_scope_state_with_other'] = Campaign.state(%w[Planned other]).order(:name).pluck(:name)
+  results['Campaign_scope_created_by'] = Campaign.created_by(user1).order(:name).pluck(:name)
+  results['Campaign_scope_assigned_to'] = Campaign.assigned_to(user1).order(:name).pluck(:name)
+  results['Campaign_scope_text_search'] = Campaign.text_search('find_me').pluck(:name)
+
+  # --- Instance Method Tests ---
+  campaign = Campaign.create!(name: 'Attachment Test')
+  task = Task.create!(name: 'My Task')
+  lead = Lead.create!(name: 'My Lead')
+  opportunity = Opportunity.create!(name: 'My Opportunity')
+
+  # attach! Task
+  attach_task_result = campaign.attach!(task)
+  task.reload
+  results['Campaign_attach!_task'] = {
+    return_value_class: attach_task_result.class.name,
+    task_asset_id: task.asset_id,
+    task_asset_type: task.asset_type,
+    campaign_tasks_ids: campaign.task_ids
+  }
+  
+  # attach! Lead
+  attach_lead_result = campaign.attach!(lead)
+  lead.reload
+  campaign.reload
+  results['Campaign_attach!_lead'] = {
+    return_value_is_attachment_array: attach_lead_result == [lead],
+    lead_campaign_id: lead.campaign_id,
+    campaign_lead_ids: campaign.lead_ids,
+    # The code does not increment the counter cache on campaign
+    campaign_leads_count: campaign.leads_count 
+  }
+
+  # attach! Opportunity
+  attach_opp_result = campaign.attach!(opportunity)
+  opportunity.reload
+  campaign.reload
+  results['Campaign_attach!_opportunity'] = {
+    return_value_is_attachment_array: attach_opp_result == [opportunity],
+    opportunity_campaign_id: opportunity.campaign_id,
+    campaign_opportunity_ids: campaign.opportunity_ids,
+    # The code does not increment the counter cache on campaign
+    campaign_opportunities_count: campaign.opportunities_count 
+  }
+
+  # attach! already attached item
+  re_attach_lead_result = campaign.attach!(lead)
+  results['Campaign_attach!_already_attached'] = {
+    return_value_is_nil: re_attach_lead_result.nil?,
+    campaign_lead_ids: campaign.lead_ids.count
+  }
+
+  # discard! Task
+  campaign.discard!(task)
+  task.reload
+  results['Campaign_discard!_task'] = {
+    task_asset_id: task.asset_id,
+    task_asset_type: task.asset_type,
+    campaign_tasks_ids_after_discard: campaign.task_ids
+  }
+
+  # discard! Lead
+  campaign.discard!(lead)
+  lead.reload
+  campaign.reload
+  results['Campaign_discard!_lead'] = {
+    lead_campaign_id: lead.campaign_id,
+    campaign_lead_ids_after_discard: campaign.lead_ids,
+    # The code does not decrement the counter cache on campaign
+    campaign_leads_count: campaign.leads_count
+  }
+
+  # discard! Opportunity
+  campaign.discard!(opportunity)
+  opportunity.reload
+  campaign.reload
+  results['Campaign_discard!_opportunity'] = {
+    opportunity_campaign_id: opportunity.campaign_id,
+    campaign_opportunity_ids_after_discard: campaign.opportunity_ids,
+    # The code does not decrement the counter cache on campaign
+    campaign_opportunities_count: campaign.opportunities_count
+  }
+
+
+  # This is the end of the transaction, all changes will be rolled back.
+  raise ActiveRecord::Rollback
+end
+
+puts JSON.dump(results)

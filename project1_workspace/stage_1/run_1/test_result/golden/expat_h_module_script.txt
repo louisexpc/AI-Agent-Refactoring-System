@@ -1,0 +1,766 @@
+An executable C program that captures the behavioral output of the `expat` library.
+
+This characterization test covers the public API of `expat`, including parser creation, handler registration, parsing of various XML documents, error handling, and state inspection functions. It uses a series of mock handlers to observe the parser's behavior and outputs the results in a machine-parseable JSON format.
+
+Key aspects of the test strategy include:
+- **Deterministic Hashing**: `XML_SetHashSalt` is used to provide a fixed salt, ensuring that hash table-related behaviors are reproducible.
+- **Comprehensive Callback Coverage**: Mock handlers are provided for all callback types to capture events like element start/end, character data, processing instructions, and DTD declarations.
+- **Error and Edge Case Testing**: Includes tests for malformed XML to verify error codes, parsing with `NULL` inputs, and calling APIs in incorrect states (e.g., before or after parsing).
+- **Advanced Feature Testing**: Scenarios cover namespace processing, DTD and entity handling, suspend/resume functionality, and protection against amplification attacks.
+- **Memory Management Testing**: A custom memory handling suite is used to test parser creation with user-supplied allocators and to simulate allocation failures.
+
+This program is designed to be compiled with `gcc -o golden golden.c xmlparse.c`, linking the test driver directly with the `expat` implementation source. It assumes a standard, non-Unicode (`XML_Char` is `char`) build configuration.
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+/* Define XML_STATIC to avoid issues with __declspec(dllimport) on Windows.
+   This is safe because we are compiling xmlparse.c directly with this file. */
+#define XML_STATIC
+#include "expat.h"
+
+/* --- Globals & Helpers --- */
+
+static bool is_first_json_entry = true;
+
+// Helper to manage JSON formatting
+void print_key(const char *key) {
+    if (!is_first_json_entry) {
+        printf(",\n");
+    }
+    printf("  \"%s\": ", key);
+    is_first_json_entry = false;
+}
+
+// Helper to print a string literal as a JSON string
+void print_json_string(const char *s) {
+    if (s == NULL) {
+        printf("null");
+        return;
+    }
+    printf("\"");
+    for (; *s; ++s) {
+        switch (*s) {
+            case '\"': printf("\\\""); break;
+            case '\\': printf("\\\\"); break;
+            case '\b': printf("\\b"); break;
+            case '\f': printf("\\f"); break;
+            case '\n': printf("\\n"); break;
+            case '\r': printf("\\r"); break;
+            case '\t': printf("\\t"); break;
+            default:
+                if ((unsigned char)*s < 32) {
+                    printf("\\u%04x", (unsigned char)*s);
+                } else {
+                    putchar(*s);
+                }
+                break;
+        }
+    }
+    printf("\"");
+}
+
+// Convert XML_Error enum to string
+const char* error_enum_to_string(enum XML_Error err) {
+    switch (err) {
+        case XML_ERROR_NONE: return "XML_ERROR_NONE";
+        case XML_ERROR_NO_MEMORY: return "XML_ERROR_NO_MEMORY";
+        case XML_ERROR_SYNTAX: return "XML_ERROR_SYNTAX";
+        case XML_ERROR_NO_ELEMENTS: return "XML_ERROR_NO_ELEMENTS";
+        case XML_ERROR_INVALID_TOKEN: return "XML_ERROR_INVALID_TOKEN";
+        case XML_ERROR_UNCLOSED_TOKEN: return "XML_ERROR_UNCLOSED_TOKEN";
+        case XML_ERROR_PARTIAL_CHAR: return "XML_ERROR_PARTIAL_CHAR";
+        case XML_ERROR_TAG_MISMATCH: return "XML_ERROR_TAG_MISMATCH";
+        case XML_ERROR_DUPLICATE_ATTRIBUTE: return "XML_ERROR_DUPLICATE_ATTRIBUTE";
+        case XML_ERROR_JUNK_AFTER_DOC_ELEMENT: return "XML_ERROR_JUNK_AFTER_DOC_ELEMENT";
+        case XML_ERROR_PARAM_ENTITY_REF: return "XML_ERROR_PARAM_ENTITY_REF";
+        case XML_ERROR_UNDEFINED_ENTITY: return "XML_ERROR_UNDEFINED_ENTITY";
+        case XML_ERROR_RECURSIVE_ENTITY_REF: return "XML_ERROR_RECURSIVE_ENTITY_REF";
+        case XML_ERROR_ASYNC_ENTITY: return "XML_ERROR_ASYNC_ENTITY";
+        case XML_ERROR_BAD_CHAR_REF: return "XML_ERROR_BAD_CHAR_REF";
+        case XML_ERROR_BINARY_ENTITY_REF: return "XML_ERROR_BINARY_ENTITY_REF";
+        case XML_ERROR_ATTRIBUTE_EXTERNAL_ENTITY_REF: return "XML_ERROR_ATTRIBUTE_EXTERNAL_ENTITY_REF";
+        case XML_ERROR_MISPLACED_XML_PI: return "XML_ERROR_MISPLACED_XML_PI";
+        case XML_ERROR_UNKNOWN_ENCODING: return "XML_ERROR_UNKNOWN_ENCODING";
+        case XML_ERROR_INCORRECT_ENCODING: return "XML_ERROR_INCORRECT_ENCODING";
+        case XML_ERROR_UNCLOSED_CDATA_SECTION: return "XML_ERROR_UNCLOSED_CDATA_SECTION";
+        case XML_ERROR_EXTERNAL_ENTITY_HANDLING: return "XML_ERROR_EXTERNAL_ENTITY_HANDLING";
+        case XML_ERROR_NOT_STANDALONE: return "XML_ERROR_NOT_STANDALONE";
+        case XML_ERROR_UNEXPECTED_STATE: return "XML_ERROR_UNEXPECTED_STATE";
+        case XML_ERROR_ENTITY_DECLARED_IN_PE: return "XML_ERROR_ENTITY_DECLARED_IN_PE";
+        case XML_ERROR_FEATURE_REQUIRES_XML_DTD: return "XML_ERROR_FEATURE_REQUIRES_XML_DTD";
+        case XML_ERROR_CANT_CHANGE_FEATURE_ONCE_PARSING: return "XML_ERROR_CANT_CHANGE_FEATURE_ONCE_PARSING";
+        case XML_ERROR_UNBOUND_PREFIX: return "XML_ERROR_UNBOUND_PREFIX";
+        case XML_ERROR_UNDECLARING_PREFIX: return "XML_ERROR_UNDECLARING_PREFIX";
+        case XML_ERROR_INCOMPLETE_PE: return "XML_ERROR_INCOMPLETE_PE";
+        case XML_ERROR_XML_DECL: return "XML_ERROR_XML_DECL";
+        case XML_ERROR_TEXT_DECL: return "XML_ERROR_TEXT_DECL";
+        case XML_ERROR_PUBLICID: return "XML_ERROR_PUBLICID";
+        case XML_ERROR_SUSPENDED: return "XML_ERROR_SUSPENDED";
+        case XML_ERROR_NOT_SUSPENDED: return "XML_ERROR_NOT_SUSPENDED";
+        case XML_ERROR_ABORTED: return "XML_ERROR_ABORTED";
+        case XML_ERROR_FINISHED: return "XML_ERROR_FINISHED";
+        case XML_ERROR_SUSPEND_PE: return "XML_ERROR_SUSPEND_PE";
+        case XML_ERROR_RESERVED_PREFIX_XML: return "XML_ERROR_RESERVED_PREFIX_XML";
+        case XML_ERROR_RESERVED_PREFIX_XMLNS: return "XML_ERROR_RESERVED_PREFIX_XMLNS";
+        case XML_ERROR_RESERVED_NAMESPACE_URI: return "XML_ERROR_RESERVED_NAMESPACE_URI";
+        case XML_ERROR_INVALID_ARGUMENT: return "XML_ERROR_INVALID_ARGUMENT";
+        case XML_ERROR_NO_BUFFER: return "XML_ERROR_NO_BUFFER";
+        case XML_ERROR_AMPLIFICATION_LIMIT_BREACH: return "XML_ERROR_AMPLIFICATION_LIMIT_BREACH";
+        case XML_ERROR_NOT_STARTED: return "XML_ERROR_NOT_STARTED";
+    }
+    return "UNKNOWN_ERROR";
+}
+
+// Convert XML_Status enum to string
+const char* status_enum_to_string(enum XML_Status status) {
+    switch (status) {
+        case XML_STATUS_ERROR: return "XML_STATUS_ERROR";
+        case XML_STATUS_OK: return "XML_STATUS_OK";
+        case XML_STATUS_SUSPENDED: return "XML_STATUS_SUSPENDED";
+    }
+    return "UNKNOWN_STATUS";
+}
+
+/* --- Callback Management --- */
+
+static bool g_in_callback_list = false;
+static bool g_is_first_callback = true;
+
+void start_callback_list(const char* key) {
+    if (!g_in_callback_list) {
+        printf(", \"%s\": [", key);
+        g_in_callback_list = true;
+        g_is_first_callback = true;
+    }
+}
+
+void end_callback_list() {
+    if (g_in_callback_list) {
+        printf("]");
+        g_in_callback_list = false;
+    }
+}
+
+void print_callback_prefix() {
+    if (!g_is_first_callback) {
+        printf(", ");
+    }
+    g_is_first_callback = false;
+}
+
+/* --- Mock Callbacks --- */
+
+void XMLCALL mock_StartElementHandler(void *userData, const XML_Char *name, const XML_Char **atts) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"StartElement\", \"name\": ");
+    print_json_string(name);
+    printf(", \"atts\": {");
+    bool first_att = true;
+    for (int i = 0; atts[i]; i += 2) {
+        if (!first_att) printf(", ");
+        print_json_string(atts[i]);
+        printf(": ");
+        print_json_string(atts[i+1]);
+        first_att = false;
+    }
+    printf("}}");
+}
+
+void XMLCALL mock_EndElementHandler(void *userData, const XML_Char *name) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"EndElement\", \"name\": ");
+    print_json_string(name);
+    printf("}");
+}
+
+void XMLCALL mock_CharacterDataHandler(void *userData, const XML_Char *s, int len) {
+    char* data = malloc(len + 1);
+    if (!data) return;
+    memcpy(data, s, len);
+    data[len] = '\0';
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"CharacterData\", \"data\": ");
+    print_json_string(data);
+    printf("}");
+    free(data);
+}
+
+void XMLCALL mock_ProcessingInstructionHandler(void *userData, const XML_Char *target, const XML_Char *data) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"ProcessingInstruction\", \"target\": ");
+    print_json_string(target);
+    printf(", \"data\": ");
+    print_json_string(data);
+    printf("}");
+}
+
+void XMLCALL mock_CommentHandler(void *userData, const XML_Char *data) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"Comment\", \"data\": ");
+    print_json_string(data);
+    printf("}");
+}
+
+void XMLCALL mock_StartCdataSectionHandler(void *userData) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"StartCdataSection\"}");
+}
+
+void XMLCALL mock_EndCdataSectionHandler(void *userData) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"EndCdataSection\"}");
+}
+
+void XMLCALL mock_DefaultHandler(void *userData, const XML_Char *s, int len) {
+    char* data = malloc(len + 1);
+    if (!data) return;
+    memcpy(data, s, len);
+    data[len] = '\0';
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"Default\", \"data\": ");
+    print_json_string(data);
+    printf("}");
+    free(data);
+}
+
+void XMLCALL mock_StartDoctypeDeclHandler(void *userData, const XML_Char *doctypeName, const XML_Char *sysid, const XML_Char *pubid, int has_internal_subset) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"StartDoctypeDecl\", \"doctypeName\": ");
+    print_json_string(doctypeName);
+    printf(", \"sysid\": ");
+    print_json_string(sysid);
+    printf(", \"pubid\": ");
+    print_json_string(pubid);
+    printf(", \"has_internal_subset\": %d}", has_internal_subset);
+}
+
+void XMLCALL mock_EndDoctypeDeclHandler(void *userData) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"EndDoctypeDecl\"}");
+}
+
+void print_content_model(XML_Content *model) {
+    if (!model) {
+        printf("null");
+        return;
+    }
+    printf("{");
+    printf("\"type\": %d, \"quant\": %d, \"name\": ", model->type, model->quant);
+    print_json_string(model->name);
+    printf(", \"numchildren\": %u, \"children\": [", model->numchildren);
+    for (unsigned int i = 0; i < model->numchildren; ++i) {
+        if (i > 0) printf(",");
+        print_content_model(&model->children[i]);
+    }
+    printf("]}");
+}
+
+
+void XMLCALL mock_ElementDeclHandler(void *userData, const XML_Char *name, XML_Content *model) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"ElementDecl\", \"name\": ");
+    print_json_string(name);
+    printf(", \"model\": ");
+    print_content_model(model);
+    printf("}");
+    XML_Parser parser = (XML_Parser)userData;
+    XML_FreeContentModel(parser, model);
+}
+
+void XMLCALL mock_AttlistDeclHandler(void *userData, const XML_Char *elname, const XML_Char *attname, const XML_Char *att_type, const XML_Char *dflt, int isrequired) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"AttlistDecl\", \"elname\": ");
+    print_json_string(elname);
+    printf(", \"attname\": ");
+    print_json_string(attname);
+    printf(", \"att_type\": ");
+    print_json_string(att_type);
+    printf(", \"dflt\": ");
+    print_json_string(dflt);
+    printf(", \"isrequired\": %d}", isrequired);
+}
+
+
+void XMLCALL mock_EntityDeclHandler(void *userData, const XML_Char *entityName, int is_parameter_entity, const XML_Char *value, int value_length, const XML_Char *base, const XML_Char *systemId, const XML_Char *publicId, const XML_Char *notationName) {
+    char* value_str = NULL;
+    if (value) {
+        value_str = malloc(value_length + 1);
+        if (value_str) {
+            memcpy(value_str, value, value_length);
+            value_str[value_length] = '\0';
+        }
+    }
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"EntityDecl\", \"entityName\": ");
+    print_json_string(entityName);
+    printf(", \"is_parameter_entity\": %d", is_parameter_entity);
+    printf(", \"value\": ");
+    print_json_string(value_str);
+    printf(", \"base\": ");
+    print_json_string(base);
+    printf(", \"systemId\": ");
+    print_json_string(systemId);
+    printf(", \"publicId\": ");
+    print_json_string(publicId);
+    printf(", \"notationName\": ");
+    print_json_string(notationName);
+    printf("}");
+    free(value_str);
+}
+
+
+void XMLCALL mock_XmlDeclHandler(void *userData, const XML_Char *version, const XML_Char *encoding, int standalone) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"XmlDecl\", \"version\": ");
+    print_json_string(version);
+    printf(", \"encoding\": ");
+    print_json_string(encoding);
+    printf(", \"standalone\": %d}", standalone);
+}
+
+void XMLCALL mock_StartNamespaceDeclHandler(void *userData, const XML_Char *prefix, const XML_Char *uri) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"StartNamespaceDecl\", \"prefix\": ");
+    print_json_string(prefix);
+    printf(", \"uri\": ");
+    print_json_string(uri);
+    printf("}");
+}
+
+void XMLCALL mock_EndNamespaceDeclHandler(void *userData, const XML_Char *prefix) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"EndNamespaceDecl\", \"prefix\": ");
+    print_json_string(prefix);
+    printf("}");
+}
+
+int XMLCALL mock_NotStandaloneHandler(void *userData) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"NotStandalone\"}");
+    return 1;
+}
+
+int XMLCALL mock_ExternalEntityRefHandler(XML_Parser parser, const XML_Char *context, const XML_Char *base, const XML_Char *systemId, const XML_Char *publicId) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"ExternalEntityRef\", \"context\": ");
+    print_json_string(context);
+    printf(", \"base\": ");
+    print_json_string(base);
+    printf(", \"systemId\": ");
+    print_json_string(systemId);
+    printf(", \"publicId\": ");
+    print_json_string(publicId);
+    printf("}");
+    return 1;
+}
+
+void XMLCALL mock_SkippedEntityHandler(void *userData, const XML_Char *entityName, int is_parameter_entity) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"SkippedEntity\", \"entityName\": ");
+    print_json_string(entityName);
+    printf(", \"is_parameter_entity\": %d}", is_parameter_entity);
+}
+
+int XMLCALL mock_UnknownEncodingHandler(void *encodingHandlerData, const XML_Char *name, XML_Encoding *info) {
+    start_callback_list("callbacks");
+    print_callback_prefix();
+    printf("{\"event\": \"UnknownEncoding\", \"name\": ");
+    print_json_string(name);
+    printf("}");
+    return 0; // Indicate we don't handle it
+}
+
+void set_all_handlers(XML_Parser parser) {
+    XML_SetStartElementHandler(parser, mock_StartElementHandler);
+    XML_SetEndElementHandler(parser, mock_EndElementHandler);
+    XML_SetCharacterDataHandler(parser, mock_CharacterDataHandler);
+    XML_SetProcessingInstructionHandler(parser, mock_ProcessingInstructionHandler);
+    XML_SetCommentHandler(parser, mock_CommentHandler);
+    XML_SetStartCdataSectionHandler(parser, mock_StartCdataSectionHandler);
+    XML_SetEndCdataSectionHandler(parser, mock_EndCdataSectionHandler);
+    XML_SetDefaultHandler(parser, mock_DefaultHandler);
+    XML_SetStartDoctypeDeclHandler(parser, mock_StartDoctypeDeclHandler);
+    XML_SetEndDoctypeDeclHandler(parser, mock_EndDoctypeDeclHandler);
+    XML_SetElementDeclHandler(parser, mock_ElementDeclHandler);
+    XML_SetAttlistDeclHandler(parser, mock_AttlistDeclHandler);
+    XML_SetEntityDeclHandler(parser, mock_EntityDeclHandler);
+    XML_SetXmlDeclHandler(parser, mock_XmlDeclHandler);
+    XML_SetStartNamespaceDeclHandler(parser, mock_StartNamespaceDeclHandler);
+    XML_SetEndNamespaceDeclHandler(parser, mock_EndNamespaceDeclHandler);
+    XML_SetNotStandaloneHandler(parser, mock_NotStandaloneHandler);
+    XML_SetExternalEntityRefHandler(parser, mock_ExternalEntityRefHandler);
+    XML_SetSkippedEntityHandler(parser, mock_SkippedEntityHandler);
+    XML_SetUnknownEncodingHandler(parser, mock_UnknownEncodingHandler, NULL);
+    XML_SetUserData(parser, parser); // Pass parser as userData for context
+}
+
+/* --- Mock Memory Handlers --- */
+size_t g_alloc_count = 0;
+size_t g_fail_on_alloc = 0; // 0 means never fail
+
+void* my_malloc(size_t size) {
+    g_alloc_count++;
+    if (g_fail_on_alloc > 0 && g_alloc_count >= g_fail_on_alloc) {
+        return NULL;
+    }
+    return malloc(size);
+}
+
+void* my_realloc(void *ptr, size_t size) {
+    g_alloc_count++;
+    if (g_fail_on_alloc > 0 && g_alloc_count >= g_fail_on_alloc) {
+        return NULL;
+    }
+    return realloc(ptr, size);
+}
+
+void my_free(void *ptr) {
+    free(ptr);
+}
+
+static XML_Memory_Handling_Suite mem_suite = {
+    my_malloc,
+    my_realloc,
+    my_free
+};
+
+void reset_alloc_fail_counter() {
+    g_alloc_count = 0;
+    g_fail_on_alloc = 0;
+}
+
+
+/* --- Test Functions --- */
+
+void test_versioning_and_features() {
+    print_key("XML_ExpatVersion");
+    print_json_string(XML_ExpatVersion());
+
+    print_key("XML_ExpatVersionInfo");
+    XML_Expat_Version v = XML_ExpatVersionInfo();
+    printf("{\"major\": %d, \"minor\": %d, \"micro\": %d}", v.major, v.minor, v.micro);
+
+    print_key("XML_GetFeatureList");
+    const XML_Feature *features = XML_GetFeatureList();
+    printf("[");
+    bool first = true;
+    for (int i = 0; features[i].feature != XML_FEATURE_END; ++i) {
+        if (!first) printf(", ");
+        printf("{\"feature\": %d, \"name\": ", features[i].feature);
+        print_json_string(features[i].name);
+        printf(", \"value\": %ld}", features[i].value);
+        first = false;
+    }
+    printf("]");
+}
+
+void test_error_strings() {
+    print_key("XML_ErrorString");
+    printf("{");
+    bool first = true;
+    for (int i = 0; i < XML_ERROR_NOT_STARTED + 1; ++i) {
+        // Skip some gaps in the enum for brevity
+        if (i > XML_ERROR_CANT_CHANGE_FEATURE_ONCE_PARSING && i < XML_ERROR_UNBOUND_PREFIX) continue;
+        if (i > XML_ERROR_SUSPEND_PE && i < XML_ERROR_RESERVED_PREFIX_XML) continue;
+        if (i > XML_ERROR_RESERVED_NAMESPACE_URI && i < XML_ERROR_INVALID_ARGUMENT) continue;
+        if (i > XML_ERROR_INVALID_ARGUMENT && i < XML_ERROR_NO_BUFFER) continue;
+        if (i > XML_ERROR_NO_BUFFER && i < XML_ERROR_AMPLIFICATION_LIMIT_BREACH) continue;
+        if (i > XML_ERROR_AMPLIFICATION_LIMIT_BREACH && i < XML_ERROR_NOT_STARTED) continue;
+
+
+        if (!first) printf(", ");
+        printf("\"%d\": ", i);
+        print_json_string(XML_ErrorString(i));
+        first = false;
+    }
+    printf("}");
+}
+
+void test_parser_lifecycle() {
+    XML_Parser p;
+    
+    print_key("XML_ParserCreate_nullEncoding");
+    p = XML_ParserCreate(NULL);
+    printf("{\"parser_is_null\": %s}", p == NULL ? "true" : "false");
+    XML_ParserFree(p);
+
+    print_key("XML_ParserCreate_validEncoding");
+    p = XML_ParserCreate("UTF-8");
+    printf("{\"parser_is_null\": %s}", p == NULL ? "true" : "false");
+    
+    print_key("XML_SetHashSalt_valid");
+    printf("{\"result\": %d}", XML_SetHashSalt(p, 12345));
+
+    XML_ParserFree(p);
+    
+    print_key("XML_ParserCreateNS_valid");
+    p = XML_ParserCreateNS("UTF-8", '|');
+    printf("{\"parser_is_null\": %s}", p == NULL ? "true" : "false");
+    XML_ParserFree(p);
+
+    print_key("XML_ParserCreate_MM_valid");
+    reset_alloc_fail_counter();
+    p = XML_ParserCreate_MM("UTF-8", &mem_suite, NULL);
+    printf("{\"parser_is_null\": %s, \"alloc_count_gt_zero\": %s}", p == NULL ? "true" : "false", g_alloc_count > 0 ? "true" : "false");
+    XML_ParserFree(p);
+
+    print_key("XML_ParserCreate_MM_allocFail_parserStruct");
+    reset_alloc_fail_counter();
+    g_fail_on_alloc = 1;
+    p = XML_ParserCreate_MM("UTF-8", &mem_suite, NULL);
+    printf("{\"parser_is_null\": %s}", p == NULL ? "true" : "false");
+    if(p) XML_ParserFree(p);
+    reset_alloc_fail_counter();
+    
+    print_key("XML_ParserCreate_MM_allocFail_atts");
+    reset_alloc_fail_counter();
+    g_fail_on_alloc = 2; // Usually the second allocation
+    p = XML_ParserCreate_MM("UTF-8", &mem_suite, NULL);
+    printf("{\"parser_is_null\": %s}", p == NULL ? "true" : "false");
+    if(p) XML_ParserFree(p);
+    reset_alloc_fail_counter();
+
+    print_key("XML_ParserReset_simple");
+    p = XML_ParserCreate(NULL);
+    XML_SetUserData(p, (void*)0xDEADBEEF);
+    XML_SetStartElementHandler(p, mock_StartElementHandler);
+    XML_Bool reset_ok = XML_ParserReset(p, "UTF-8");
+    void* userData = XML_GetUserData(p);
+    printf("{\"reset_ok\": %s, \"userData_is_null\": %s}", reset_ok ? "true" : "false", userData == NULL ? "true" : "false");
+    XML_ParserFree(p);
+}
+
+
+void test_simple_parsing() {
+    const char* doc = "<doc att='val'><elem/></doc>";
+    XML_Parser p;
+    enum XML_Status status;
+
+    print_key("XML_Parse_wellFormed_noHandlers");
+    p = XML_ParserCreate(NULL);
+    XML_SetHashSalt(p, 12345);
+    status = XML_Parse(p, doc, strlen(doc), 1);
+    printf("{\"status\": \"%s\"}", status_enum_to_string(status));
+    XML_ParserFree(p);
+
+    print_key("XML_Parse_wellFormed_withHandlers");
+    p = XML_ParserCreate(NULL);
+    XML_SetHashSalt(p, 12345);
+    set_all_handlers(p);
+    printf("{");
+    start_callback_list("callbacks");
+    status = XML_Parse(p, doc, strlen(doc), 1);
+    end_callback_list();
+    printf(", \"status\": \"%s\"", status_enum_to_string(status));
+    printf("}");
+    XML_ParserFree(p);
+
+    print_key("XML_Parse_error_tagMismatch");
+    p = XML_ParserCreate(NULL);
+    XML_SetHashSalt(p, 12345);
+    status = XML_Parse(p, "<doc><el></doc>", 15, 1);
+    printf("{\"status\": \"%s\", \"errorCode\": \"%s\", \"line\": %lu, \"column\": %lu}",
+        status_enum_to_string(status),
+        error_enum_to_string(XML_GetErrorCode(p)),
+        XML_GetCurrentLineNumber(p),
+        XML_GetCurrentColumnNumber(p));
+    XML_ParserFree(p);
+    
+    print_key("XML_Parse_chunked");
+    p = XML_ParserCreate(NULL);
+    XML_SetHashSalt(p, 12345);
+    set_all_handlers(p);
+    printf("{");
+    start_callback_list("callbacks");
+    XML_Parse(p, "<doc>", 5, 0);
+    XML_Parse(p, "<elem/>", 7, 0);
+    status = XML_Parse(p, "</doc>", 6, 1);
+    end_callback_list();
+    printf(", \"final_status\": \"%s\"", status_enum_to_string(status));
+    printf("}");
+    XML_ParserFree(p);
+}
+
+void test_complex_parsing() {
+    const char* ns_doc = "<n1:doc xmlns:n1='uri1' att='val'><n1:elem/></n1:doc>";
+    XML_Parser p;
+    enum XML_Status status;
+    
+    print_key("XML_Parse_namespaces");
+    p = XML_ParserCreateNS(NULL, '|');
+    XML_SetHashSalt(p, 12345);
+    set_all_handlers(p);
+    printf("{");
+    start_callback_list("callbacks");
+    status = XML_Parse(p, ns_doc, strlen(ns_doc), 1);
+    end_callback_list();
+    printf(", \"status\": \"%s\"", status_enum_to_string(status));
+    printf("}");
+    XML_ParserFree(p);
+
+    const char* dtd_doc = "<?xml version='1.0'?>"
+                          "<!DOCTYPE doc ["
+                          "<!ELEMENT doc (elem*)>"
+                          "<!ATTLIST doc att CDATA #IMPLIED>"
+                          "<!ENTITY e 'entity text'>"
+                          "]>"
+                          "<doc>&e;</doc>";
+    print_key("XML_Parse_dtdAndEntity");
+    p = XML_ParserCreate(NULL);
+    XML_SetParamEntityParsing(p, XML_PARAM_ENTITY_PARSING_ALWAYS);
+    XML_SetHashSalt(p, 12345);
+    set_all_handlers(p);
+    printf("{");
+    start_callback_list("callbacks");
+    status = XML_Parse(p, dtd_doc, strlen(dtd_doc), 1);
+    end_callback_list();
+    printf(", \"status\": \"%s\"", status_enum_to_string(status));
+    printf("}");
+    XML_ParserFree(p);
+}
+
+void test_get_buffer() {
+    const char* doc1 = "<doc>";
+    const char* doc2 = "</doc>";
+    XML_Parser p = XML_ParserCreate(NULL);
+    XML_SetHashSalt(p, 12345);
+
+    print_key("XML_GetBuffer_ParseBuffer");
+    printf("{");
+    start_callback_list("callbacks");
+
+    void *buf = XML_GetBuffer(p, strlen(doc1));
+    memcpy(buf, doc1, strlen(doc1));
+    enum XML_Status status1 = XML_ParseBuffer(p, strlen(doc1), 0);
+
+    buf = XML_GetBuffer(p, strlen(doc2));
+    memcpy(buf, doc2, strlen(doc2));
+    enum XML_Status status2 = XML_ParseBuffer(p, strlen(doc2), 1);
+    
+    end_callback_list();
+    printf(", \"status1\": \"%s\", \"status2\": \"%s\"", status_enum_to_string(status1), status_enum_to_string(status2));
+    printf("}");
+
+    XML_ParserFree(p);
+}
+
+void XMLCALL stop_handler(void *userData, const XML_Char *name, const XML_Char **atts) {
+    XML_Parser parser = (XML_Parser)userData;
+    XML_StopParser(parser, XML_TRUE);
+    
+    // Also call the original mock handler to log the event
+    mock_StartElementHandler(userData, name, atts);
+}
+
+void test_suspend_resume() {
+    const char* doc = "<doc><stophere/><continue/></doc>";
+    XML_Parser p = XML_ParserCreate(NULL);
+    XML_SetHashSalt(p, 12345);
+    XML_SetUserData(p, p);
+    XML_SetStartElementHandler(p, stop_handler);
+    XML_SetEndElementHandler(p, mock_EndElementHandler);
+
+    print_key("XML_StopParser_XML_ResumeParser");
+    printf("{");
+    
+    start_callback_list("callbacks_before_resume");
+    enum XML_Status status1 = XML_Parse(p, doc, strlen(doc), 1);
+    end_callback_list();
+    
+    printf(", \"status_after_stop\": \"%s\"", status_enum_to_string(status1));
+    printf(", \"error_after_stop\": \"%s\"", error_enum_to_string(XML_GetErrorCode(p)));
+    
+    start_callback_list("callbacks_after_resume");
+    enum XML_Status status2 = XML_ResumeParser(p);
+    end_callback_list();
+
+    printf(", \"status_after_resume\": \"%s\"", status_enum_to_string(status2));
+    printf(", \"error_after_resume\": \"%s\"", error_enum_to_string(XML_GetErrorCode(p)));
+
+    printf("}");
+    XML_ParserFree(p);
+}
+
+
+void test_misc_apis() {
+    XML_Parser p = XML_ParserCreateNS(NULL, ':');
+    XML_SetHashSalt(p, 12345);
+
+    print_key("XML_SetBase_GetBase");
+    XML_SetBase(p, "http://example.com/base/");
+    printf("{\"base\": ");
+    print_json_string(XML_GetBase(p));
+    printf("}");
+
+    print_key("XML_UseForeignDTD_true");
+    printf("{\"error\": \"%s\"}", error_enum_to_string(XML_UseForeignDTD(p, XML_TRUE)));
+    
+    print_key("XML_SetReparseDeferralEnabled_false");
+    printf("{\"result\": %s}", XML_SetReparseDeferralEnabled(p, XML_FALSE) ? "true" : "false");
+
+    XML_ParserFree(p);
+}
+
+void test_billion_laughs() {
+#if defined(XML_DTD) && (XML_GE == 1)
+    const char* bl_doc = "<!DOCTYPE lolz [<!ENTITY lol \"lol\"><!ENTITY lol2 \"&lol;&lol;\"><!ENTITY lol3 \"&lol2;&lol2;\"><!ENTITY lol4 \"&lol3;&lol3;\">]><lolz>&lol4;</lolz>";
+
+    print_key("XML_BillionLaughs_default");
+    XML_Parser p = XML_ParserCreate(NULL);
+    XML_SetParamEntityParsing(p, XML_PARAM_ENTITY_PARSING_ALWAYS);
+    enum XML_Status status = XML_Parse(p, bl_doc, strlen(bl_doc), 1);
+    printf("{\"status\": \"%s\", \"errorCode\": \"%s\"}", status_enum_to_string(status), error_enum_to_string(XML_GetErrorCode(p)));
+    XML_ParserFree(p);
+    
+    print_key("XML_BillionLaughs_protectionOff");
+    p = XML_ParserCreate(NULL);
+    XML_SetParamEntityParsing(p, XML_PARAM_ENTITY_PARSING_ALWAYS);
+    XML_SetBillionLaughsAttackProtectionMaximumAmplification(p, 1000.0f);
+    status = XML_Parse(p, bl_doc, strlen(bl_doc), 1);
+    printf("{\"status\": \"%s\", \"errorCode\": \"%s\"}", status_enum_to_string(status), error_enum_to_string(XML_GetErrorCode(p)));
+    XML_ParserFree(p);
+#else
+    print_key("XML_BillionLaughs_skipped");
+    printf("{\"reason\": \"XML_DTD or XML_GE not defined\"}");
+#endif
+}
+
+int main(int argc, char* argv[]) {
+    printf("{\n");
+
+    test_versioning_and_features();
+    test_error_strings();
+    test_parser_lifecycle();
+    test_simple_parsing();
+    test_complex_parsing();
+    test_get_buffer();
+    test_suspend_resume();
+    test_misc_apis();
+    test_billion_laughs();
+
+    printf("\n}\n");
+    return 0;
+}

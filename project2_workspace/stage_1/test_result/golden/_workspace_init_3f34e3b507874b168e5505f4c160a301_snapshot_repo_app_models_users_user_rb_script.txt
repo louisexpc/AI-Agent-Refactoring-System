@@ -1,0 +1,527 @@
+require 'json'
+require 'bundler/inline'
+
+gemfile do
+  source 'https://rubygems.org'
+  # FatFreeCRM used rails 5.2, so we'll align with that.
+  gem 'activerecord', '~> 5.2.3'
+  gem 'sqlite3', '~> 1.4'
+  gem 'activesupport', '~> 5.2.3'
+end
+
+require 'active_record'
+require 'active_support/all'
+
+# --- Mock Environment Setup ---
+
+# Establish in-memory database connection
+ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
+ActiveRecord::Base.logger = nil # Suppress schema creation noise
+
+# Mock external dependencies that are not part of ActiveRecord core
+module I18n
+  @locale = :en
+  @translations = {
+    en: {
+      msg_account_not_approved: "Account requires approval",
+      msg_invalig_login: "Invalid login"
+    }
+  }
+
+  def self.t(key, **options)
+    @translations[@locale][key] || "translation missing: #{key}"
+  end
+
+  def self.locale
+    @locale
+  end
+
+  def self.locale=(val)
+    @locale = val
+  end
+
+  def self.default_locale
+    :en
+  end
+end
+
+class Setting
+  @settings = { user_signup: :allowed }
+  def self.user_signup
+    @settings[:user_signup]
+  end
+
+  def self.user_signup=(val)
+    @settings[:user_signup] = val
+  end
+end
+
+class Ability
+  attr_reader :user
+  def initialize(user)
+    @user = user
+  end
+
+  def self.new(user)
+    @instance ||= super(user)
+  end
+
+  def accessible_by(scope)
+    if @user&.admin?
+      scope
+    else
+      scope.where(id: @user&.id)
+    end
+  end
+end
+
+# Define a minimal module to mock Devise's behavior
+module MockDevise
+  def self.included(base)
+    base.extend ClassMethods
+  end
+
+  module ClassMethods
+    def devise(*modules)
+      include MockDevise::Helpers
+    end
+  end
+
+  module Helpers
+    def confirmed?
+      !!confirmed_at
+    end
+  end
+end
+
+# Define base class for mocked asset models
+class AssetBase < ActiveRecord::Base
+  self.abstract_class = true
+  belongs_to :user
+  scope :assigned_to, ->(user) { where(assigned_to: user.id) }
+  scope :created_by, ->(user) { where(user_id: user.id) }
+end
+
+# Define dummy models for associations
+class Avatar < AssetBase; end
+class Comment < AssetBase
+  scope :assigned_to, ->(user) { none } # Special case in has_related_assets?
+end
+class Account < AssetBase; end
+class Campaign < AssetBase; end
+class Lead < AssetBase; end
+class Contact < AssetBase; end
+class Opportunity < AssetBase; end
+class Permission < AssetBase; end
+class Preference < AssetBase; end
+class List < AssetBase; end
+class Group < AssetBase; end
+class Version < AssetBase; end
+class Task < AssetBase; end
+
+# Monkey-patch ActiveRecord::Base to include mocks before User class is loaded
+class ActiveRecord::Base
+  include MockDevise
+
+  def self.has_paper_trail(*_args); end
+
+  def active_for_authentication?
+    true
+  end
+
+  def inactive_message
+    :inactive
+  end
+end
+
+module ActiveSupport
+  def self.run_load_hooks(name, klass); end
+end
+
+# --- Schema Definition ---
+ActiveRecord::Schema.define do
+  create_table :users do |t|
+    t.string :username, limit: 32, default: "", null: false
+    t.string :email, limit: 254, default: "", null: false
+    t.string :first_name, limit: 32
+    t.string :last_name, limit: 32
+    t.string :title, limit: 64
+    t.string :company, limit: 64
+    t.string :alt_email, limit: 64
+    t.string :phone, limit: 32
+    t.string :mobile, limit: 32
+    t.string :aim, limit: 32
+    t.string :yahoo, limit: 32
+    t.string :google, limit: 32
+    t.string :encrypted_password, default: "", null: false
+    t.string :password_salt, default: "", null: false
+    t.datetime :last_sign_in_at
+    t.datetime :current_sign_in_at
+    t.string :last_sign_in_ip
+    t.string :current_sign_in_ip
+    t.integer :sign_in_count, default: 0, null: false
+    t.datetime :deleted_at
+    t.datetime :created_at
+    t.datetime :updated_at
+    t.boolean :admin, default: false, null: false
+    t.datetime :suspended_at
+    t.string :unconfirmed_email, default: "", null: false
+    t.string :reset_password_token
+    t.datetime :reset_password_sent_at
+    t.string :remember_token
+    t.datetime :remember_created_at
+    t.string :authentication_token
+    t.string :confirmation_token
+    t.datetime :confirmed_at
+    t.datetime :confirmation_sent_at
+    t.string :password
+    t.string :password_confirmation
+  end
+
+  create_table :preferences do |t|
+    t.integer :user_id
+    t.string :locale
+  end
+
+  create_table :opportunities do |t|
+    t.integer :user_id
+    t.integer :assigned_to
+    t.string :stage
+  end
+
+  [:accounts, :campaigns, :leads, :contacts, :comments, :tasks, :avatars, :permissions, :lists, :groups, :versions].each do |table_name|
+    create_table table_name do |t|
+      t.integer :user_id
+      t.integer :assigned_to
+    end
+  end
+  create_table :groups_users, id: false do |t|
+      t.integer :group_id
+      t.integer :user_id
+  end
+end
+
+# --- Start of Source Code ---
+# The User class definition is embedded here to make the script self-contained.
+
+# frozen_string_literal: true
+class User < ActiveRecord::Base
+  devise :database_authenticatable, :registerable, :confirmable,
+         :encryptable, :recoverable, :rememberable, :trackable
+  before_create :suspend_if_needs_approval
+
+  has_one :avatar, as: :entity, dependent: :destroy  # Personal avatar.
+  has_many :avatars                                  # As owner who uploaded it, ex. Contact avatar.
+  has_many :comments, as: :commentable               # As owner who created a comment.
+  has_many :accounts
+  has_many :campaigns
+  has_many :leads
+  has_many :contacts
+  has_many :opportunities
+  has_many :assigned_opportunities, class_name: 'Opportunity', foreign_key: 'assigned_to'
+  has_many :permissions, dependent: :destroy
+  has_many :preferences, class_name: 'Preference', dependent: :destroy
+  has_many :lists
+  has_and_belongs_to_many :groups
+
+  has_paper_trail versions: { class_name: 'Version' }, ignore: [:last_sign_in_at]
+
+  scope :by_id, -> { order('id DESC') }
+  scope :without_user, ->(user) { where('id != ?', user.id).by_name }
+  scope :by_name, -> { order('first_name, last_name, email') }
+
+  scope :text_search, lambda { |query|
+    query = query.gsub(/[^\w\s\-.'\p{L}]/u, '').strip
+    where('upper(username) LIKE upper(:s) OR upper(email) LIKE upper(:s) OR upper(first_name) LIKE upper(:s) OR upper(last_name) LIKE upper(:s)', s: "%#{query}%")
+  }
+
+  scope :my, ->(current_user) { accessible_by(current_user.ability) }
+
+  scope :have_assigned_opportunities, lambda {
+    joins("INNER JOIN opportunities ON users.id = opportunities.assigned_to")
+      .where("opportunities.stage <> 'lost' AND opportunities.stage <> 'won'")
+      .select('DISTINCT(users.id), users.*')
+  }
+
+  validates :email,
+            presence: { message: :missing_email },
+            length: { minimum: 3, maximum: 254 },
+            uniqueness: { message: :email_in_use, case_sensitive: false },
+            format: { with: /\A([^@\s]+)@((?:[-a-z0-9]+\.)+[a-z]{2,})\z/i, on: :create }
+  validates :username,
+            uniqueness: { message: :username_taken, case_sensitive: false },
+            presence: { message: :missing_username },
+            format: { with: /\A[a-z0-9_-]+\z/i }
+  validates :password,
+            presence: { if: :password_required? },
+            confirmation: true
+
+  def name
+    first_name.blank? ? username : first_name
+  end
+
+  def full_name
+    first_name.blank? && last_name.blank? ? email : "#{first_name} #{last_name}".strip
+  end
+
+  def suspended?
+    suspended_at != nil
+  end
+
+  def awaits_approval?
+    suspended? && sign_in_count == 0 && Setting.user_signup == :needs_approval
+  end
+
+  def active_for_authentication?
+    super && confirmed? && !awaits_approval? && !suspended?
+  end
+
+  def inactive_message
+    if !confirmed?
+      super
+    elsif awaits_approval?
+      I18n.t(:msg_account_not_approved)
+    elsif suspended?
+      I18n.t(:msg_invalig_login)
+    else
+      super
+    end
+  end
+
+  def emailable?
+    confirmed? && !awaits_approval? && !suspended? && email.present?
+  end
+
+  def preference
+    @preference ||= preferences.build
+  end
+  alias pref preference
+
+  def set_individual_locale
+    I18n.locale = preference[:locale] if preference[:locale]
+  end
+
+  def to_json(_options = nil)
+    [name].to_json
+  end
+
+  def to_xml(_options = nil)
+    "<array><string>#{name}</string></array>"
+  end
+
+  def password_required?
+    !persisted? || !password.nil? || !password_confirmation.nil?
+  end
+
+  def ability
+    @ability ||= Ability.new(self)
+  end
+
+  def destroyable?(current_user)
+    current_user != self && !has_related_assets?
+  end
+
+  def suspend_if_needs_approval
+    self.suspended_at = Time.now if Setting.user_signup == :needs_approval && !admin
+  end
+
+  def has_related_assets?
+    sum = %w[Account Campaign Lead Contact Opportunity Comment Task].detect do |asset|
+      klass = asset.constantize
+      (asset != "Comment" && klass.assigned_to(self).exists?) || klass.created_by(self).exists?
+    end
+    !sum.nil?
+  end
+
+  class << self
+    def can_signup?
+      %i[allowed needs_approval].include? Setting.user_signup
+    end
+
+    def find_for_database_authentication(warden_conditions)
+      conditions = warden_conditions.dup
+      if login = conditions.delete(:email)
+        where(conditions.to_h).where(["lower(username) = :value OR lower(email) = :value", { value: login.downcase }]).first
+      end
+    end
+  end
+
+  ActiveSupport.run_load_hooks(:fat_free_crm_user, self)
+end
+# --- End of Source Code ---
+
+# --- Test Execution ---
+results = {}
+FIXED_TIME = Time.at(1672531200).utc # 2023-01-01 00:00:00 UTC
+
+def cleanup_db
+  [User, Preference, Opportunity, Account, Campaign, Lead, Contact, Comment, Task].each(&:delete_all)
+end
+
+include ActiveSupport::Testing::TimeHelpers
+
+begin
+  # --- Instance Method Tests ---
+
+  user_with_name = User.new(first_name: "John", username: "john_doe")
+  results['User_name_withFirstName'] = user_with_name.name
+  user_without_name = User.new(first_name: "", username: "john_doe")
+  results['User_name_withoutFirstName'] = user_without_name.name
+
+  user_full = User.new(first_name: "John", last_name: "Doe", email: "j@d.com")
+  results['User_full_name_withFirstAndLastName'] = user_full.full_name
+  user_first_only = User.new(first_name: "John", last_name: "", email: "j@d.com")
+  results['User_full_name_withFirstNameOnly'] = user_first_only.full_name
+  user_last_only = User.new(first_name: "", last_name: "Doe", email: "j@d.com")
+  results['User_full_name_withLastNameOnly'] = user_last_only.full_name
+  user_no_name = User.new(first_name: "", last_name: "", email: "j@d.com")
+  results['User_full_name_withEmailOnly'] = user_no_name.full_name
+
+  results['User_suspended_isFalse'] = User.new(suspended_at: nil).suspended?
+  results['User_suspended_isTrue'] = User.new(suspended_at: FIXED_TIME).suspended?
+
+  Setting.user_signup = :needs_approval
+  user_awaiting = User.new(suspended_at: FIXED_TIME, sign_in_count: 0)
+  results['User_awaits_approval_isTrue'] = user_awaiting.awaits_approval?
+  Setting.user_signup = :allowed
+  results['User_awaits_approval_isFalse_settingAllowed'] = user_awaiting.awaits_approval?
+  Setting.user_signup = :needs_approval
+  user_awaiting.sign_in_count = 1
+  results['User_awaits_approval_isFalse_signedIn'] = user_awaiting.awaits_approval?
+  user_awaiting.sign_in_count = 0
+  user_awaiting.suspended_at = nil
+  results['User_awaits_approval_isFalse_notSuspended'] = user_awaiting.awaits_approval?
+  Setting.user_signup = :allowed
+
+  active_user = User.new(confirmed_at: FIXED_TIME, suspended_at: nil)
+  unconfirmed_user = User.new(confirmed_at: nil)
+  suspended_user = User.new(confirmed_at: FIXED_TIME, suspended_at: FIXED_TIME)
+  Setting.user_signup = :needs_approval
+  awaiting_user_auth = User.new(confirmed_at: FIXED_TIME, suspended_at: FIXED_TIME, sign_in_count: 0)
+  results['User_active_for_authentication_isActive'] = active_user.active_for_authentication?
+  results['User_active_for_authentication_isInactive_unconfirmed'] = unconfirmed_user.active_for_authentication?
+  results['User_active_for_authentication_isInactive_suspended'] = suspended_user.active_for_authentication?
+  results['User_active_for_authentication_isInactive_awaitingApproval'] = awaiting_user_auth.active_for_authentication?
+  Setting.user_signup = :allowed
+
+  results['User_inactive_message_unconfirmed'] = unconfirmed_user.inactive_message.to_s
+  results['User_inactive_message_suspended'] = suspended_user.inactive_message
+  Setting.user_signup = :needs_approval
+  results['User_inactive_message_awaitingApproval'] = awaiting_user_auth.inactive_message
+  Setting.user_signup = :allowed
+  results['User_inactive_message_other'] = active_user.inactive_message.to_s
+
+  results['User_emailable_isTrue'] = User.new(email: 'test@test.com', confirmed_at: FIXED_TIME).emailable?
+  results['User_emailable_isFalse_unconfirmed'] = User.new(email: 'test@test.com', confirmed_at: nil).emailable?
+  results['User_emailable_isFalse_suspended'] = User.new(email: 'test@test.com', confirmed_at: FIXED_TIME, suspended_at: FIXED_TIME).emailable?
+  results['User_emailable_isFalse_noEmail'] = User.new(email: '', confirmed_at: FIXED_TIME).emailable?
+
+  user_for_prefs = User.new
+  pref1 = user_for_prefs.preference
+  pref2 = user_for_prefs.pref
+  results['User_preference_buildsNewPreference'] = pref1.class.name
+  results['User_preference_isCached'] = pref1.object_id == pref2.object_id
+  results['User_pref_alias_works'] = user_for_prefs.method(:pref) == user_for_prefs.method(:preference)
+
+  I18n.locale = I18n.default_locale
+  user_with_locale = User.new
+  user_with_locale.preferences.build(locale: 'fr')
+  user_with_locale.set_individual_locale
+  results['User_set_individual_locale_setsLocale'] = I18n.locale
+  I18n.locale = I18n.default_locale
+  user_without_locale = User.new
+  user_without_locale.preferences.build(locale: nil)
+  user_without_locale.set_individual_locale
+  results['User_set_individual_locale_doesNotSetLocaleWithNil'] = I18n.locale
+
+  results['User_to_json_output'] = user_with_name.to_json
+  results['User_to_xml_output'] = user_with_name.to_xml
+
+  new_user = User.new
+  results['User_password_required_forNewUser'] = new_user.password_required?
+  persisted_user = User.new; def persisted_user.persisted?; true; end
+  results['User_password_required_falseForPersistedUser'] = persisted_user.password_required?
+  persisted_user.password = 'newpass'
+  results['User_password_required_trueWhenPasswordSet'] = persisted_user.password_required?
+  persisted_user.password = nil; persisted_user.password_confirmation = 'newpass'
+  results['User_password_required_trueWhenConfirmationSet'] = persisted_user.password_required?
+
+  user_for_ability = User.new
+  ability1 = user_for_ability.ability
+  ability2 = user_for_ability.ability
+  results['User_ability_returnsAbilityObject'] = ability1.class.name
+  results['User_ability_isCached'] = ability1.object_id == ability2.object_id
+
+  travel_to(FIXED_TIME) do
+    Setting.user_signup = :needs_approval
+    user_to_suspend = User.new(username: 'susp', email: 's@u.sp'); user_to_suspend.run_callbacks(:create)
+    results['User_suspend_if_needs_approval_suspendsUser'] = user_to_suspend.suspended_at
+    admin_user = User.new(username: 'admin_susp', email: 'as@u.sp', admin: true); admin_user.run_callbacks(:create)
+    results['User_suspend_if_needs_approval_doesNotSuspendAdmin'] = admin_user.suspended_at
+    Setting.user_signup = :allowed
+    user_not_suspended = User.new(username: 'notsusp', email: 'ns@u.sp'); user_not_suspended.run_callbacks(:create)
+    results['User_suspend_if_needs_approval_doesNotSuspendWhenAllowed'] = user_not_suspended.suspended_at
+  end
+  Setting.user_signup = :allowed
+
+  cleanup_db
+  u1 = User.create!(username: 'test_user', email: 'test_email@example.com', password: 'password')
+  results['User_find_for_database_authentication_byUsername'] = User.find_for_database_authentication(email: 'Test_User')&.id == u1.id
+  results['User_find_for_database_authentication_byEmail'] = User.find_for_database_authentication(email: 'Test_Email@example.com')&.id == u1.id
+  results['User_find_for_database_authentication_notFound'] = User.find_for_database_authentication(email: 'wrong').nil?
+
+  destroyable_user = User.create!(username: 'destroyable', email: 'd@e.com', password: 'p')
+  another_user = User.create!(username: 'another', email: 'a@e.com', password: 'p')
+  results['User_has_related_assets_isFalse_withNoAssets'] = !destroyable_user.has_related_assets?
+  results['User_destroyable_isTrue_withNoAssets'] = destroyable_user.destroyable?(another_user)
+  results['User_destroyable_isFalse_ifSameUser'] = !destroyable_user.destroyable?(destroyable_user)
+  Account.create!(user_id: destroyable_user.id)
+  results['User_has_related_assets_isTrue_withCreatedAccount'] = destroyable_user.has_related_assets?
+  results['User_destroyable_isFalse_withCreatedAccount'] = !destroyable_user.destroyable?(another_user)
+  cleanup_db
+
+  destroyable_user = User.create!(username: 'd2', email: 'd2@e.com', password: 'p')
+  Opportunity.create!(assigned_to: destroyable_user.id)
+  results['User_has_related_assets_isTrue_withAssignedOpportunity'] = destroyable_user.has_related_assets?
+  cleanup_db
+  
+  destroyable_user = User.create!(username: 'd3', email: 'd3@e.com', password: 'p')
+  Comment.create!(user_id: destroyable_user.id)
+  results['User_has_related_assets_isTrue_withCreatedComment'] = destroyable_user.has_related_assets?
+  cleanup_db
+
+  # --- Class Method & Scope Tests ---
+  Setting.user_signup = :allowed; results['User_can_signup_isTrue_whenAllowed'] = User.can_signup?
+  Setting.user_signup = :needs_approval; results['User_can_signup_isTrue_whenNeedsApproval'] = User.can_signup?
+  Setting.user_signup = :disabled; results['User_can_signup_isFalse_whenDisabled'] = User.can_signup?
+  Setting.user_signup = :allowed
+
+  u_z = User.create!(first_name: 'Zoe', last_name: 'Zebra', email: 'z@e.com', username: 'zoe', password: 'p')
+  u_a = User.create!(first_name: 'Adam', last_name: 'Apple', email: 'a@e.com', username: 'adam', password: 'p')
+  u_b = User.create!(first_name: 'Bob', last_name: 'Banana', email: 'b@e.com', username: 'bob', password: 'p')
+  
+  results['User_scope_by_id'] = User.by_id.pluck(:id)
+  results['User_scope_by_name'] = User.by_name.pluck(:username)
+  results['User_scope_without_user'] = User.without_user(u_a).pluck(:username)
+  results['User_scope_text_search_byUsername'] = User.text_search('zoe').pluck(:username)
+  results['User_scope_text_search_byFirstName'] = User.text_search('Adam').pluck(:username)
+  results['User_scope_text_search_byLastName'] = User.text_search('Banana').pluck(:username)
+  results['User_scope_text_search_byEmail'] = User.text_search('a@e.com').pluck(:username)
+  results['User_scope_text_search_withSpecialChars'] = User.text_search("B'ob-Ba@na%na").pluck(:username)
+  results['User_scope_text_search_noResults'] = User.text_search('nonexistent').pluck(:username)
+
+  Opportunity.create!(assigned_to: u_b.id, stage: 'prospecting')
+  Opportunity.create!(assigned_to: u_z.id, stage: 'won')
+  results['User_scope_have_assigned_opportunities'] = User.have_assigned_opportunities.pluck(:username)
+
+  admin = User.create!(username: 'admin', email: 'admin@e.com', password: 'p', admin: true)
+  results['User_scope_my_forAdmin'] = User.my(admin).pluck(:username).sort
+  results['User_scope_my_forRegularUser'] = User.my(u_a).pluck(:username)
+
+  cleanup_db
+rescue => e
+  results[:error] = "#{e.class}: #{e.message}"
+  results[:backtrace] = e.backtrace.first(10)
+ensure
+  puts JSON.dump(results)
+end

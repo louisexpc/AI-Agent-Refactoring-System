@@ -1,0 +1,188 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+// This is the crucial part to allow including 'source.c' which has its own main function.
+// We rename the main function from the included file to 'source_main'.
+#define main source_main
+#include "source.c"
+#undef main
+
+// Struct to hold the results of a test run
+typedef struct {
+    char* stdout_output;
+    int exit_code;
+} test_result_t;
+
+// Helper function to escape strings for JSON output
+void print_json_escaped(const char *s) {
+    if (!s) {
+        printf("\"\"");
+        return;
+    }
+    putchar('"');
+    while (*s) {
+        switch (*s) {
+            case '\"': printf("\\\""); break;
+            case '\\': printf("\\\\"); break;
+            case '\b': printf("\\b"); break;
+            case '\f': printf("\\f"); break;
+            case '\n': printf("\\n"); break;
+            case '\r': printf("\\r"); break;
+            case '\t': printf("\\t"); break;
+            default:
+                if (*s < 32) {
+                    printf("\\u%04x", (unsigned char)*s);
+                } else {
+                    putchar(*s);
+                }
+                break;
+        }
+        s++;
+    }
+    putchar('"');
+}
+
+// This function runs the source_main in a controlled environment,
+// capturing its stdout and exit code. It uses pipes and dup2 to
+// redirect stdin and stdout without creating temporary files.
+test_result_t run_test(const char* input_data) {
+    test_result_t result = { .stdout_output = NULL, .exit_code = -1 };
+
+    int saved_stdin = dup(STDIN_FILENO);
+    int saved_stdout = dup(STDOUT_FILENO);
+
+    int in_pipe[2];
+    int out_pipe[2];
+
+    if (pipe(in_pipe) == -1 || pipe(out_pipe) == -1) {
+        perror("pipe");
+        exit(EXIT_FAILURE);
+    }
+
+    // Redirect stdin to the read end of the input pipe
+    dup2(in_pipe[0], STDIN_FILENO);
+    // Redirect stdout to the write end of the output pipe
+    dup2(out_pipe[1], STDOUT_FILENO);
+    
+    // Close unused pipe ends in the parent process
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+
+    // Write input data to the input pipe. This will be read by source_main's stdin.
+    if (input_data && strlen(input_data) > 0) {
+        write(in_pipe[1], input_data, strlen(input_data));
+    }
+    // Close the write end of the input pipe to signal EOF to the reader (fread)
+    close(in_pipe[1]);
+
+    // Clear any stdio buffers before calling the user's main
+    fflush(stdout);
+    
+    // Call the original main function from source.c
+    result.exit_code = source_main();
+    fflush(stdout);
+
+    // Restore original stdin and stdout
+    dup2(saved_stdin, STDIN_FILENO);
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdin);
+    close(saved_stdout);
+
+    // Read the captured output from the output pipe
+    char* output_buffer = (char*)malloc(8192);
+    if (!output_buffer) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+    ssize_t bytes_read = read(out_pipe[0], output_buffer, 8191);
+    if (bytes_read >= 0) {
+        output_buffer[bytes_read] = '\0';
+        result.stdout_output = output_buffer;
+    } else {
+        free(output_buffer);
+        result.stdout_output = strdup(""); // Should not happen
+    }
+    
+    close(out_pipe[0]);
+
+    return result;
+}
+
+void print_test_result(const char* key, const test_result_t* result) {
+    printf("    \"%s\": {\n", key);
+    printf("        \"stdout\": ");
+    print_json_escaped(result->stdout_output);
+    printf(",\n");
+    printf("        \"exit_code\": %d\n", result->exit_code);
+    printf("    }");
+}
+
+int main(int argc, char** argv) {
+    printf("{\n");
+
+    // Test case 1: Simple valid XML
+    test_result_t res_simple = run_test("<root><child/></root>");
+    print_test_result("XMLParser_Simple", &res_simple);
+    printf(",\n");
+    free(res_simple.stdout_output);
+
+    // Test case 2: Empty input
+    test_result_t res_empty = run_test("");
+    print_test_result("XMLParser_EmptyInput", &res_empty);
+    printf(",\n");
+    free(res_empty.stdout_output);
+
+    // Test case 3: Malformed XML (unclosed tag)
+    test_result_t res_malformed = run_test("<root>");
+    print_test_result("XMLParser_Malformed_UnclosedTag", &res_malformed);
+    printf(",\n");
+    free(res_malformed.stdout_output);
+
+    // Test case 4: XML with attributes (should be ignored by current handlers)
+    test_result_t res_attrs = run_test("<root id=\"1\"><child name=\"a\"/></root>");
+    print_test_result("XMLParser_WithAttributes", &res_attrs);
+    printf(",\n");
+    free(res_attrs.stdout_output);
+
+    // Test case 5: Deeply nested XML
+    test_result_t res_nested = run_test("<level1><level2><level3/></level2></level1>");
+    print_test_result("XMLParser_Nested", &res_nested);
+    printf(",\n");
+    free(res_nested.stdout_output);
+
+    // Test case 6: XML with character data (should be ignored)
+    test_result_t res_text = run_test("<root>some text here</root>");
+    print_test_result("XMLParser_WithTextContent", &res_text);
+    printf(",\n");
+    free(res_text.stdout_output);
+
+    // Test case 7: XML with processing instruction and comment (should be ignored)
+    test_result_t res_meta = run_test("<?xml version=\"1.0\"?><!-- comment --><doc/>");
+    print_test_result("XMLParser_WithMetadata", &res_meta);
+    printf(",\n");
+    free(res_meta.stdout_output);
+
+    // Test case 8: Invalid XML (tag mismatch)
+    test_result_t res_mismatch = run_test("<root><child></root>");
+    print_test_result("XMLParser_Malformed_TagMismatch", &res_mismatch);
+    printf(",\n");
+    free(res_mismatch.stdout_output);
+    
+    // Test case 9: Multiple root-level elements (invalid)
+    test_result_t res_multi_root = run_test("<root1/><root2/>");
+    print_test_result("XMLParser_Malformed_MultipleRoots", &res_multi_root);
+    printf(",\n");
+    free(res_multi_root.stdout_output);
+
+    // Test case 10: XML declaration only
+    test_result_t res_decl_only = run_test("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+    print_test_result("XMLParser_DeclarationOnly", &res_decl_only);
+    printf("\n");
+    free(res_decl_only.stdout_output);
+
+    printf("}\n");
+    return 0;
+}

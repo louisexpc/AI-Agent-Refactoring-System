@@ -1,0 +1,440 @@
+require 'json'
+require 'active_record'
+require 'sqlite3'
+require 'time'
+
+# Set up an in-memory SQLite database
+ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
+
+# Define a mock Setting class
+class Setting
+  @settings = {}
+  def self.[](key)
+    @settings[key]
+  end
+
+  def self.[]=(key, value)
+    @settings[key] = value
+  end
+
+  def self.unroll(key)
+    @settings[key] || []
+  end
+
+  def self.clear
+    @settings = {}
+  end
+end
+
+# Define a minimal mock for PaperTrail
+module PaperTrail
+  module Model
+    def has_paper_trail(*)
+      # no-op
+    end
+  end
+end
+ActiveRecord::Base.extend(PaperTrail::Model)
+
+
+# Define mock modules for external dependencies that are mixed in
+module UsesUserPermissions
+  def self.included(base)
+    base.class_eval do
+      attr_accessor :permissions_list
+      def permissions
+        self.permissions_list || []
+      end
+      def user_ids=(ids); end
+    end
+  end
+end
+
+module ActsAsCommentable
+  def self.included(base)
+    base.has_many :comments, as: :commentable, dependent: :destroy
+  end
+end
+
+module UsesCommentExtensions
+  # no-op
+end
+
+module ActsAsTaggableOn
+  module Taggable
+    def self.included(base)
+      base.class_eval do
+        has_many :taggings, as: :taggable
+        has_many :tags, through: :taggings
+        def tag_list=(*) end
+        def tag_list(*) '' end
+      end
+    end
+  end
+end
+ActiveRecord::Base.include(ActsAsTaggableOn::Taggable)
+
+
+# Define mock methods that are added to ActiveRecord::Base
+class ActiveRecord::Base
+  def self.acts_as_commentable; include ActsAsCommentable; end
+  def self.uses_comment_extensions; include UsesCommentExtensions; end
+  def self.uses_user_permissions; include UsesUserPermissions; end
+  def self.has_fields; has_many :fields, as: :fieldable; end
+  def self.exportable(*); end
+  def self.sortable(*); end
+  def self.has_ransackable_associations(*); end
+  def self.ransack_can_autocomplete(*); end
+
+  # Mock for Ransack
+  def self.ransack(params)
+    query = self
+    params.each do |key, value|
+      if key.end_with?('_cont')
+        field = key.chomp('_cont')
+        query = query.where("LOWER(#{field}) LIKE ?", "%#{value.downcase}%")
+      end
+    end
+    Relation.new(query)
+  end
+
+  # A simple mock for ActiveRecord::Relation to chain 'result'
+  class Relation
+    def initialize(query)
+      @query = query
+    end
+
+    def result
+      @query
+    end
+    
+    def method_missing(method, *args, &block)
+        @query.send(method, *args, &block)
+    end
+  end
+end
+
+# Define schema
+ActiveRecord::Schema.define do
+  create_table :opportunities do |t|
+    t.integer :user_id
+    t.integer :campaign_id
+    t.integer :assigned_to
+    t.string :name, limit: 64, default: "", null: false
+    t.string :access, limit: 8, default: "Public"
+    t.string :source, limit: 32
+    t.string :stage, limit: 32
+    t.integer :probability
+    t.decimal :amount, precision: 12, scale: 2
+    t.decimal :discount, precision: 12, scale: 2
+    t.date :closes_on
+    t.datetime :deleted_at
+    t.datetime :created_at
+    t.datetime :updated_at
+    t.string :background_info, limit: 255
+    t.text :subscribed_users
+  end
+
+  create_table :users do |t|
+    t.string :name
+  end
+
+  create_table :campaigns do |t|
+    t.string :name
+    t.integer :opportunities_count, default: 0
+  end
+
+  create_table :accounts do |t|
+    t.string :name
+    t.integer :user_id
+  end
+
+  create_table :account_opportunities do |t|
+    t.integer :account_id
+    t.integer :opportunity_id
+  end
+
+  create_table :contacts do |t|
+    t.string :first_name
+  end
+
+  create_table :contact_opportunities do |t|
+    t.integer :contact_id
+    t.integer :opportunity_id
+  end
+
+  create_table :tasks do |t|
+    t.string :name
+    t.integer :asset_id
+    t.string :asset_type
+  end
+
+  create_table :emails do |t|
+    t.integer :mediator_id
+    t.string :mediator_type
+  end
+
+  create_table :comments do |t|
+    t.integer :commentable_id
+    t.string :commentable_type
+    t.text :comment
+  end
+  
+  create_table :tags do |t|
+    t.string :name
+  end
+  
+  create_table :taggings do |t|
+    t.integer :tag_id
+    t.integer :taggable_id
+    t.string :taggable_type
+  end
+  
+  create_table :versions do |t|
+    # no-op
+  end
+
+  create_table :fields do |t|
+      t.integer :fieldable_id
+      t.string :fieldable_type
+  end
+end
+
+# Define models
+class User < ActiveRecord::Base; end
+class Campaign < ActiveRecord::Base; end
+class Account < ActiveRecord::Base
+  def self.create_or_select_for(opportunity, params)
+    if params[:id].present?
+      Account.find(params[:id])
+    elsif params[:name].present?
+      Account.find_or_create_by(name: params[:name])
+    else
+      Account.new
+    end
+  end
+end
+class Contact < ActiveRecord::Base; end
+class Task < ActiveRecord::Base; end
+class Email < ActiveRecord::Base; end
+class AccountOpportunity < ActiveRecord::Base
+  belongs_to :account
+  belongs_to :opportunity
+end
+class ContactOpportunity < ActiveRecord::Base
+  belongs_to :contact
+  belongs_to :opportunity
+end
+class Comment < ActiveRecord::Base; end
+class Version < ActiveRecord::Base; end
+class Field < ActiveRecord::Base; end
+class Tag < ActiveRecord::Base; end
+class Tagging < ActiveRecord::Base; end
+
+
+# Load the actual class file
+require_relative '/workspace/init/3f34e3b507874b168e5505f4c160a301/snapshot/repo/app/models/entities/opportunity.rb'
+
+# Main script
+results = {}
+
+# Wrap everything in a transaction to ensure a clean slate
+ActiveRecord::Base.transaction do
+  begin
+    # --- Setup ---
+    Setting.clear
+    Setting[:opportunity_stage] = [['Prospecting', 'prospecting'], ['Analysis', 'analysis'], ['Won', 'won'], ['Lost', 'lost']]
+    Setting[:opportunity_default_stage] = 'prospecting'
+
+    user1 = User.create!(name: 'User One')
+    user2 = User.create!(name: 'User Two')
+    campaign1 = Campaign.create!(name: 'Campaign One')
+    
+    now = Time.parse("2023-10-27T10:00:00Z")
+    
+    # Freeze time for deterministic timestamps
+    [Opportunity, Campaign, Account, Contact, Task].each { |m| m.default_timezone = :utc }
+    allow_class = ->(klass) {
+        allow(klass).to receive(:now).and_return(now)
+        allow(klass).to receive(:current).and_return(now)
+    }
+    allow_class.call(Time)
+    allow_class.call(DateTime)
+    allow_class.call(ActiveSupport::TimeZone)
+    
+    Opportunity.delete_all # Ensure clean table
+
+    # --- Class Method Tests ---
+    results['Opportunity_per_page_default'] = Opportunity.per_page
+    results['Opportunity_default_stage_with_setting'] = Opportunity.default_stage
+    Setting.clear
+    results['Opportunity_default_stage_without_setting'] = Opportunity.default_stage
+    Setting[:opportunity_default_stage] = 'prospecting' # Restore for other tests
+
+    # --- Scope and Data Setup ---
+    opp1 = Opportunity.create!(name: 'Won Opp', user: user1, assigned_to: user1.id, stage: 'won', amount: 1000, probability: 100, closes_on: '2024-01-01', created_at: now - 2.days)
+    opp2 = Opportunity.create!(name: 'Lost Opp', user: user1, assigned_to: user2.id, stage: 'lost', amount: 2000, probability: 0, closes_on: '2024-02-01', created_at: now - 1.day)
+    opp3 = Opportunity.create!(name: 'Prospect Opp', user: user2, assigned_to: user1.id, stage: 'prospecting', amount: 500, probability: 50, closes_on: '2023-12-01', created_at: now)
+    opp4 = Opportunity.create!(name: 'Other Opp', user: user2, assigned_to: nil, stage: nil, amount: 3000, probability: 10, closes_on: '2024-03-01', created_at: now + 1.day)
+    opp5 = Opportunity.create!(name: 'Unassigned Pipeline Opp', user_id: user1.id, assigned_to: nil, stage: 'analysis', closes_on: '2024-01-15', amount: 1500)
+
+    # --- Scope Tests ---
+    results['Opportunity_scope_state_single'] = { sql: Opportunity.state(['won']).to_sql, ids: Opportunity.state(['won']).ids.sort }
+    results['Opportunity_scope_state_multiple'] = { sql: Opportunity.state(['won', 'lost']).to_sql, ids: Opportunity.state(['won', 'lost']).ids.sort }
+    results['Opportunity_scope_state_with_other'] = { sql: Opportunity.state(['won', 'other']).to_sql, ids: Opportunity.state(['won', 'other']).ids.sort }
+    results['Opportunity_scope_created_by'] = { sql: Opportunity.created_by(user1).to_sql, ids: Opportunity.created_by(user1).ids.sort }
+    results['Opportunity_scope_assigned_to'] = { sql: Opportunity.assigned_to(user1).to_sql, ids: Opportunity.assigned_to(user1).ids.sort }
+    results['Opportunity_scope_won'] = { sql: Opportunity.won.to_sql, ids: Opportunity.won.ids.sort }
+    results['Opportunity_scope_lost'] = { sql: Opportunity.lost.to_sql, ids: Opportunity.lost.ids.sort }
+    results['Opportunity_scope_not_lost'] = { sql: Opportunity.not_lost.to_sql, ids: Opportunity.not_lost.ids.sort }
+    results['Opportunity_scope_pipeline'] = { sql: Opportunity.pipeline.to_sql, ids: Opportunity.pipeline.ids.sort }
+    results['Opportunity_scope_unassigned'] = { sql: Opportunity.unassigned.to_sql, ids: Opportunity.unassigned.ids.sort }
+    results['Opportunity_scope_weighted_sort'] = { sql: Opportunity.weighted_sort.to_sql }
+    results['Opportunity_scope_text_search_with_string'] = { sql: Opportunity.text_search('Prospect').to_sql, ids: Opportunity.text_search('Prospect').ids.sort }
+    results['Opportunity_scope_text_search_with_id'] = { sql: Opportunity.text_search(opp1.id.to_s).to_sql, ids: Opportunity.text_search(opp1.id.to_s).ids.sort }
+    results['Opportunity_scope_visible_on_dashboard_user1'] = { sql: Opportunity.visible_on_dashboard(user1).to_sql, ids: Opportunity.visible_on_dashboard(user1).ids.sort }
+    results['Opportunity_scope_visible_on_dashboard_user2'] = { sql: Opportunity.visible_on_dashboard(user2).to_sql, ids: Opportunity.visible_on_dashboard(user2).ids.sort }
+    results['Opportunity_scope_by_closes_on'] = { sql: Opportunity.by_closes_on.to_sql, ids: Opportunity.by_closes_on.ids }
+    results['Opportunity_scope_by_amount'] = { sql: Opportunity.by_amount.to_sql, ids: Opportunity.by_amount.ids }
+
+    # --- Instance Method Tests ---
+    
+    # weighted_amount
+    results['Opportunity_weighted_amount_with_all_values'] = opp3.weighted_amount
+    opp3.discount = 100
+    results['Opportunity_weighted_amount_with_discount'] = opp3.weighted_amount
+    opp_nil = Opportunity.new(amount: 1000, discount: nil, probability: nil)
+    results['Opportunity_weighted_amount_with_nil_values'] = opp_nil.weighted_amount
+
+    # Validations
+    invalid_opp = Opportunity.new
+    invalid_opp.valid?
+    results['Opportunity_validation_name_presence'] = invalid_opp.errors.messages
+    
+    invalid_opp.name = "Test"
+    invalid_opp.probability = 'abc'
+    invalid_opp.amount = 'abc'
+    invalid_opp.discount = 'abc'
+    invalid_opp.stage = 'invalid_stage'
+    invalid_opp.valid?
+    results['Opportunity_validation_numericality_and_stage'] = invalid_opp.errors.messages
+    
+    shared_opp_fail = Opportunity.new(name: 'Shared Opp', access: 'Shared')
+    shared_opp_fail.permissions_list = [] # from UsesUserPermissions mock
+    shared_opp_fail.valid?
+    results['Opportunity_validation_shared_access_fail'] = shared_opp_fail.errors.messages
+
+    shared_opp_ok = Opportunity.new(name: 'Shared Opp', access: 'Shared')
+    shared_opp_ok.permissions_list = [1]
+    shared_opp_ok.valid?
+    results['Opportunity_validation_shared_access_ok'] = shared_opp_ok.errors.messages
+
+    # save_with_account_and_permissions
+    account1 = Account.create!(name: 'Account One')
+    contact1 = Contact.create!(first_name: 'Contact One')
+    campaign2 = Campaign.create!(name: 'Campaign Two')
+
+    save_opp = Opportunity.new(name: 'Save Opp', user: user1)
+    params_save = {
+      account: { name: 'New Account' },
+      campaign: campaign2.id.to_s,
+      contact: contact1.id.to_s
+    }
+    save_opp.save_with_account_and_permissions(params_save)
+    results['Opportunity_save_with_account_and_permissions_new_account'] = {
+      persisted: save_opp.persisted?,
+      account_name: save_opp.account&.name,
+      campaign_id: save_opp.campaign_id,
+      contact_ids: save_opp.contact_ids
+    }
+    
+    save_opp_2 = Opportunity.new(name: 'Save Opp 2', user: user1)
+    params_save_2 = {
+        account: { id: account1.id.to_s },
+        campaign: '',
+        contact: ''
+    }
+    save_opp_2.save_with_account_and_permissions(params_save_2)
+    results['Opportunity_save_with_account_and_permissions_existing_account'] = {
+      persisted: save_opp_2.persisted?,
+      account_id: save_opp_2.account_id,
+      campaign_id: save_opp_2.campaign_id,
+      contact_ids: save_opp_2.contact_ids
+    }
+    
+    # update_with_account_and_permissions
+    update_opp = Opportunity.create!(name: 'Update Me', account: account1)
+    params_update = {
+      opportunity: { name: 'Updated Name', access: 'Public' },
+      account: { name: 'Updated Account' }
+    }
+    update_opp.update_with_account_and_permissions(params_update)
+    update_opp.reload
+    results['Opportunity_update_with_account_and_permissions_change_account'] = {
+      name: update_opp.name,
+      account_name: update_opp.account&.name
+    }
+
+    params_update_remove_account = {
+      account: { id: '', name: '' }
+    }
+    update_opp.update_with_account_and_permissions(params_update_remove_account)
+    update_opp.reload
+    results['Opportunity_update_with_account_and_permissions_remove_account'] = {
+      account_id: update_opp.account_id
+    }
+    
+    # attach! / discard!
+    attach_opp = Opportunity.create!(name: 'Attach Opp')
+    contact_to_attach = Contact.create!(first_name: 'Attachable')
+    task_to_attach = Task.create!(name: 'Attachable Task', asset: attach_opp)
+    
+    attach_opp.attach!(contact_to_attach)
+    attach_opp.attach!(contact_to_attach) # Should not double-attach
+    results['Opportunity_attach_contact'] = { contact_ids: attach_opp.contact_ids }
+
+    attach_opp.attach!(task_to_attach)
+    results['Opportunity_attach_task'] = { task_ids: attach_opp.task_ids }
+
+    attach_opp.discard!(contact_to_attach)
+    results['Opportunity_discard_contact'] = { contact_ids: attach_opp.contact_ids }
+    
+    attach_opp.discard!(task_to_attach)
+    task_to_attach.reload
+    results['Opportunity_discard_task'] = { task_asset_id: task_to_attach.asset_id, task_asset_type: task_to_attach.asset_type }
+
+    # create_for
+    create_for_account = Account.create!(name: "Create For Account")
+    create_for_user = User.create!(name: "Create For User")
+    
+    # Successful creation
+    created_opp = Opportunity.create_for(create_for_user, create_for_account, { name: 'Opp Created For' })
+    results['Opportunity_create_for_success'] = { persisted: created_opp.persisted?, name: created_opp.name, account_id: created_opp.account_id }
+
+    # Failed creation (no name)
+    failed_opp = Opportunity.create_for(create_for_user, create_for_account, { name: '' })
+    results['Opportunity_create_for_no_name'] = { persisted: failed_opp.persisted?, errors: failed_opp.errors.messages }
+
+    # Callbacks
+    callback_campaign = Campaign.create!(name: 'Callback Campaign', opportunities_count: 0)
+    callback_opp = Opportunity.create!(name: 'Callback Opp', campaign: callback_campaign)
+    callback_campaign.reload
+    results['Opportunity_after_create_increment_opportunities_count'] = callback_campaign.opportunities_count
+
+    callback_opp.destroy
+    callback_campaign.reload
+    results['Opportunity_after_destroy_decrement_opportunities_count'] = callback_campaign.opportunities_count
+
+
+  rescue StandardError => e
+    results['error'] = {
+      message: e.message,
+      backtrace: e.backtrace.select { |line| line.include?('script.rb') }
+    }
+  end
+
+  # This is crucial for tests. It rolls back the transaction, cleaning up the DB.
+  raise ActiveRecord::Rollback
+end
+
+puts JSON.dump(results)

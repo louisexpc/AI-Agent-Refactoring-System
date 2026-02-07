@@ -1,0 +1,26 @@
+CREATE TABLE blogs (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL,
+    category VARCHAR(255) NOT NULL,
+    num_views INT DEFAULT 0,
+    author VARCHAR(255) DEFAULT 'admin',
+    images TEXT[] DEFAULT ARRAY[]::TEXT[],
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE blog_likes (
+    blog_id INT NOT NULL REFERENCES blogs(id) ON DELETE CASCADE,
+    user_id INT NOT NULL,
+    PRIMARY KEY (blog_id, user_id)
+);
+
+CREATE TABLE coupons (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,
+    expiry TIMESTAMPTZ NOT NULL,
+    discount DECIMAL(5, 2) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);

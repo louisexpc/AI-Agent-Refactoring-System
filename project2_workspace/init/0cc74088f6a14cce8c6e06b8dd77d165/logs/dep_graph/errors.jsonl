@@ -1,0 +1,3 @@
+{"path": ".devcontainer/install.sh", "lang": "shell", "error": "tree-sitter unsupported: unsupported language: shell"}
+{"path": "app/controllers/admin/application_controller.rb", "lang": "ruby", "error": "tree-sitter unsupported: No module named 'tree_sitter_ruby'"}
+{"path": "public/robots.txt", "lang": "plaintext", "error": "tree-sitter unsupported: unsupported language: plaintext"}

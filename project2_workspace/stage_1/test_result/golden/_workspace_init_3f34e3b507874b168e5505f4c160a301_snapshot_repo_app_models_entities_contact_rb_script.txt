@@ -1,0 +1,487 @@
+An executable Ruby script that complies with the specified requirements, including the setup of a mock environment, characterization of public methods, and JSON output, is provided below.
+
+```ruby
+# frozen_string_literal: true
+
+require 'json'
+require 'active_record'
+require 'active_support/all'
+
+# --- Mocking Infrastructure ---
+
+# In-memory database setup
+ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
+
+# Base class for mock models to avoid repeating mock methods
+class MockableModel < ActiveRecord::Base
+  self.abstract_class = true
+
+  # --- Mocking gem methods ---
+  def self.has_ransackable_associations(*); end
+  def self.ransack_can_autocomplete; end
+  def self.uses_user_permissions; end
+  def self.acts_as_commentable; end
+  def self.uses_comment_extensions; end
+  def self.acts_as_taggable_on(*); end
+  def self.has_paper_trail(*); end
+  def self.has_fields; end
+  def self.exportable; end
+  def self.sortable(*); end
+  def self.serialize(*_args, **_kwargs); end # Handle new type: argument
+  def self.run_load_hooks(*); end
+
+  # Mock association methods that might be called on the class
+  def self.find(*); end
+end
+
+# Define a minimal schema for all required tables
+ActiveRecord::Schema.define do
+  create_table :contacts, force: true do |t|
+    t.integer :user_id
+    t.integer :lead_id
+    t.integer :assigned_to
+    t.integer :reports_to
+    t.string :first_name, limit: 64, default: "", null: false
+    t.string :last_name, limit: 64, default: "", null: false
+    t.string :access, limit: 8, default: "Public"
+    t.string :title, limit: 64
+    t.string :department, limit: 64
+    t.string :source, limit: 32
+    t.string :email, limit: 254
+    t.string :alt_email, limit: 64
+    t.string :phone, limit: 32
+    t.string :mobile, limit: 32
+    t.string :fax, limit: 32
+    t.string :blog, limit: 128
+    t.string :linkedin, limit: 128
+    t.string :facebook, limit: 128
+    t.string :twitter, limit: 128
+    t.date :born_on
+    t.boolean :do_not_call, default: false, null: false
+    t.datetime :deleted_at
+    t.string :background_info, limit: 255
+    t.text :subscribed_users
+    t.timestamps
+  end
+
+  create_table :users, force: true
+  create_table :leads, force: true do |t|
+    t.string :first_name
+    t.string :last_name
+    t.string :title
+    t.string :source
+    t.string :email
+    t.string :alt_email
+    t.string :phone
+    t.string :mobile
+    t.string :blog
+    t.string :linkedin
+    t.string :facebook
+    t.string :twitter
+    t.boolean :do_not_call
+    t.string :background_info
+  end
+
+  create_table :accounts, force: true do |t|
+    t.string :name
+    t.integer :user_id
+  end
+
+  create_table :account_contacts, force: true do |t|
+    t.integer :account_id
+    t.integer :contact_id
+  end
+
+  create_table :opportunities, force: true
+  create_table :contact_opportunities, force: true do |t|
+    t.integer :contact_id
+    t.integer :opportunity_id
+  end
+
+  create_table :tasks, force: true do |t|
+    t.integer :asset_id
+    t.string :asset_type
+  end
+
+  create_table :addresses, force: true do |t|
+    t.string :addressable_type
+    t.integer :addressable_id
+    t.string :address_type
+    t.string :street1
+    t.string :street2
+    t.string :city
+    t.string :state
+    t.string :zipcode
+    t.string :country
+    t.string :full_address
+  end
+end
+
+# --- Mock Models and Dependencies ---
+
+class User < MockableModel; end
+class Campaign < MockableModel; end
+class Task < MockableModel; end
+class Opportunity < MockableModel; end
+class AccountContact < MockableModel
+    belongs_to :account
+    belongs_to :contact
+end
+class ContactOpportunity < MockableModel
+    belongs_to :contact
+    belongs_to :opportunity
+end
+class Address < MockableModel
+  def self.reject_address(attributes)
+    attributes['street1'].blank? && attributes['city'].blank?
+  end
+end
+class Email < MockableModel; end
+class Comment < MockableModel; end
+class Version < MockableModel; end
+
+
+class Account < MockableModel
+  has_many :account_contacts
+  has_many :contacts, through: :account_contacts
+  
+  def self.create_or_select_for(record, params)
+    # ActiveRecord.find is stubbed globally. Temporarily enable it for this method.
+    unallow_find_stub do
+      if params[:id].present? && params[:id] != "0"
+        Account.find(params[:id])
+      elsif params[:name].present?
+        Account.find_by(name: params[:name]) || Account.create(name: params[:name], user_id: record.user_id)
+      end
+    end
+  end
+
+  # Helper to temporarily disable the global `find` stub
+  def self.unallow_find_stub
+    original_method = self.method(:find)
+    self.send(:define_singleton_method, :find) do |*args|
+      ActiveRecord::Base.find(*args)
+    end
+    yield
+  ensure
+    self.send(:define_singleton_method, :find, original_method)
+  end
+end
+
+class Lead < MockableModel
+  has_one :business_address, -> { where(address_type: "Business") }, as: :addressable, class_name: "Address"
+  def campaign; nil; end
+end
+
+class Setting
+  cattr_accessor :require_first_names, :require_last_names
+end
+Setting.require_first_names = false
+Setting.require_last_names = false
+
+class String
+  def name_permutations
+    split.permutation.to_a.map { |p| p.join(' ') }
+  end
+end
+
+# Stubbing `allow` for RSpec-like syntax to improve readability
+def allow(klass)
+  Target.new(klass)
+end
+class Target
+  def initialize(subject)
+    @subject = subject
+  end
+  def to receive(method)
+    Receiver.new(@subject, method)
+  end
+end
+class Receiver
+  def initialize(subject, method)
+    @subject = subject
+    @method = method
+    @subject.singleton_class.send(:alias_method, "original_#{@method}", @method)
+  end
+  def and_return(value)
+    @subject.define_singleton_method(@method) { |*_| value }
+  end
+end
+# Restore original method
+def unallow(klass, method)
+  if klass.singleton_class.method_defined?("original_#{method}")
+    klass.singleton_class.send(:alias_method, method, "original_#{method}")
+    klass.singleton_class.send(:remove_method, "original_#{method}")
+  end
+end
+
+# --- Load the actual class under test ---
+# The original class inherits from ActiveRecord::Base, so we need to make our mockable one do that.
+# Then we can just load the file.
+Contact = Class.new(MockableModel)
+# Need to define these associations *before* loading the file, because the file will try to use them.
+Contact.class_eval do
+    # This is mocked to prevent validation errors for 'Shared' access
+    has_many :permissions
+end
+# Now, load the class definition from the file.
+# The code re-opens the Contact class and adds all the methods and associations.
+load '/workspace/init/3f34e3b507874b168e5505f4c160a301/snapshot/repo/app/models/entities/contact.rb'
+
+# --- Test Execution ---
+results = {}
+
+# Test setup
+# Clean up database between tests
+def cleanup
+  [Contact, User, Lead, Account, Opportunity, Task, Address, AccountContact, ContactOpportunity].each(&:destroy_all)
+end
+
+# --- Class Method Tests ---
+
+results['Contact_per_page_default'] = { value: Contact.per_page }
+results['Contact_first_name_position_default'] = { value: Contact.first_name_position }
+
+# --- Scope Tests ---
+cleanup
+user1 = User.create!
+user2 = User.create!
+c1 = Contact.create!(first_name: "U1", last_name: "Created", user: user1, assigned_to: user2.id)
+c2 = Contact.create!(first_name: "U2", last_name: "Assigned", user: user2, assigned_to: user1.id)
+
+results['Contact_scope_created_by'] = {
+  contact_ids: Contact.created_by(user1).pluck(:id)
+}
+results['Contact_scope_assigned_to'] = {
+  contact_ids: Contact.assigned_to(user1).pluck(:id)
+}
+
+cleanup
+c_john = Contact.create!(first_name: 'John', last_name: 'Smith', email: 'john.s@example.com', phone: '111-222-3333')
+c_jane = Contact.create!(first_name: 'Jane', last_name: 'Doe', email: 'jane.d@example.com', mobile: '444-555-6666')
+c_adam = Contact.create!(first_name: 'Adam', last_name: 'Smith', email: 'a.smith@example.com')
+
+String.class_eval do
+  def name_permutations
+    # Simplified mock for determinism
+    perms = self.split(' ').permutation(2).to_a
+    # For 'john smith', this will be [['john', 'smith'], ['smith', 'john']]
+    perms
+  end
+end
+
+results['Contact_scope_text_search_byFirstName'] = {
+  contact_ids: Contact.text_search('John').pluck(:id).sort
+}
+results['Contact_scope_text_search_byLastName'] = {
+  contact_ids: Contact.text_search('Smith').pluck(:id).sort
+}
+results['Contact_scope_text_search_byFullName'] = {
+  contact_ids: Contact.text_search('John Smith').pluck(:id).sort
+}
+results['Contact_scope_text_search_byEmail'] = {
+  contact_ids: Contact.text_search('jane.d@example.com').pluck(:id).sort
+}
+results['Contact_scope_text_search_byPhone'] = {
+  contact_ids: Contact.text_search('111-222').pluck(:id).sort
+}
+results['Contact_scope_text_search_byMobile'] = {
+  contact_ids: Contact.text_search('555-6666').pluck(:id).sort
+}
+results['Contact_scope_text_search_noResults'] = {
+  contact_ids: Contact.text_search('NoSuchPerson').pluck(:id).sort
+}
+
+# --- Instance Method Tests ---
+cleanup
+contact = Contact.new(first_name: "Peter", last_name: "Pan")
+results['Contact_full_name_default'] = { name: contact.full_name }
+results['Contact_full_name_alias_name'] = { name: contact.name }
+results['Contact_full_name_format_before'] = { name: contact.full_name("before") }
+results['Contact_full_name_format_after'] = { name: contact.full_name("after") }
+results['Contact_full_name_empty'] = { name: Contact.new.full_name.strip }
+
+# --- Validation Tests ---
+cleanup
+Setting.require_first_names = true
+c_no_first = Contact.new(last_name: "Jones")
+c_no_first.valid?
+results['Contact_validation_require_firstName_true'] = {
+  valid: c_no_first.valid?,
+  errors: c_no_first.errors.full_messages
+}
+
+Setting.require_first_names = false
+c_no_first_allowed = Contact.new(last_name: "Jones")
+c_no_first_allowed.valid?
+results['Contact_validation_require_firstName_false'] = {
+  valid: c_no_first_allowed.valid?,
+  errors: c_no_first_allowed.errors.full_messages
+}
+
+cleanup
+Setting.require_last_names = true
+c_no_last = Contact.new(first_name: "Indiana")
+c_no_last.valid?
+results['Contact_validation_require_lastName_true'] = {
+  valid: c_no_last.valid?,
+  errors: c_no_last.errors.full_messages
+}
+
+Setting.require_last_names = false
+c_no_last_allowed = Contact.new(first_name: "Indiana")
+c_no_last_allowed.valid?
+results['Contact_validation_require_lastName_false'] = {
+  valid: c_no_last_allowed.valid?,
+  errors: c_no_last_allowed.errors.full_messages
+}
+Setting.require_first_names = false # reset
+Setting.require_last_names = false # reset
+
+cleanup
+c_shared_no_users = Contact.new(first_name: "Shared", last_name: "Contact", access: "Shared")
+# Mock permissions to return an empty array
+def c_shared_no_users.permissions; []; end
+c_shared_no_users.valid?
+results['Contact_validation_shared_access_no_users'] = {
+  valid: c_shared_no_users.valid?,
+  errors: c_shared_no_users.errors.full_messages
+}
+
+c_shared_with_users = Contact.new(first_name: "Shared", last_name: "Contact", access: "Shared")
+def c_shared_with_users.permissions; [1]; end # Mock having a permission
+c_shared_with_users.valid?
+results['Contact_validation_shared_access_with_users'] = {
+  valid: c_shared_with_users.valid?,
+  errors: c_shared_with_users.errors.full_messages
+}
+
+cleanup
+long_string = "a" * 100
+c_len = Contact.new(first_name: long_string, title: long_string)
+c_len.valid?
+results['Contact_validation_length'] = {
+  valid: c_len.valid?,
+  errors: c_len.errors.messages.keys
+}
+
+
+# --- Complex Method Tests ---
+
+# Test save_with_account_and_permissions
+cleanup
+user = User.create!
+opp = Opportunity.create!
+contact = Contact.new(first_name: "Test", last_name: "User", user: user)
+params = {
+  account: { name: "New Account Inc." },
+  opportunity: opp.id.to_s
+}
+allow(Opportunity).to receive(:find).and_return(opp)
+result = contact.save_with_account_and_permissions(params)
+account = Account.first
+results['Contact_save_with_account_and_permissions_newAccountAndOpp'] = {
+  save_result: result,
+  contact_id: contact.id,
+  contact_persisted: contact.persisted?,
+  account_id: contact.account.id,
+  account_name: contact.account.name,
+  account_created_id: account&.id,
+  opportunity_ids: contact.opportunity_ids
+}
+unallow(Opportunity, :find)
+
+# Test update_with_account_and_permissions
+cleanup
+user = User.create!
+contact = Contact.create!(first_name: "Original", last_name: "Name", user: user, access: "Public")
+existing_account = Account.create!(name: "Old Corp")
+params = {
+  contact: {
+    first_name: "Updated",
+    access: "Private",
+    user_ids: [user.id] # for access check
+  },
+  account: { id: existing_account.id.to_s }
+}
+allow(Account).to receive(:find).and_return(existing_account)
+contact.update_with_account_and_permissions(params)
+contact.reload
+
+results['Contact_update_with_account_and_permissions_existingAccount'] = {
+  first_name: contact.first_name,
+  access: contact.access,
+  account_id: contact.account_id,
+  account_name: contact.account.name
+}
+unallow(Account, :find)
+
+
+# Test attach! and discard!
+cleanup
+contact = Contact.create!(first_name: "Attach", last_name: "Test")
+task = Task.create!
+opp = Opportunity.create!
+
+contact.attach!(task)
+contact.attach!(opp)
+contact.reload
+results['Contact_attach_initial'] = {
+  task_asset_id: Task.first.asset_id,
+  task_asset_type: Task.first.asset_type,
+  opportunity_ids: contact.opportunity_ids
+}
+
+contact.discard!(task)
+contact.discard!(opp)
+contact.reload
+task.reload
+results['Contact_discard_final'] = {
+  task_asset_id: task.asset_id,
+  task_asset_type: task.asset_type,
+  opportunity_ids: contact.opportunity_ids
+}
+
+# Test create_for
+cleanup
+user = User.create!
+account = Account.create!(user: user, name: "Associated Account")
+opportunity = Opportunity.create!
+lead_address = Address.create!(address_type: "Business", street1: "123 Lead St")
+lead = Lead.create!(
+  first_name: "Lead", last_name: "Gen", email: "lead@gen.com",
+  background_info: "From a lead", do_not_call: true
+)
+lead.business_address = lead_address
+
+params = {
+  account: { user_id: user.id, assigned_to: user.id },
+  access: "Public"
+}
+# Stubbing for simplicity, as in a real app this would be more complex
+def lead.save_with_model_permissions(model); save; end
+
+# Mock fields on Lead class
+def (Lead.singleton_class).fields; []; end
+
+created_contact = nil
+allow(Opportunity).to receive(:find).and_return(opportunity)
+created_contact = Contact.create_for(lead, account, opportunity, params)
+
+results['Contact_create_for_fromLead'] = {
+  persisted: created_contact.persisted?,
+  errors: created_contact.errors.full_messages,
+  first_name: created_contact.first_name,
+  last_name: created_contact.last_name,
+  email: created_contact.email,
+  background_info: created_contact.background_info,
+  do_not_call: created_contact.do_not_call,
+  lead_id: created_contact.lead_id,
+  account_id: created_contact.account_id,
+  opportunity_ids: created_contact.opportunity_ids,
+  business_address_street: created_contact.business_address&.street1
+}
+unallow(Opportunity, :find)
+
+
+puts JSON.dump(results)

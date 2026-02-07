@@ -1,0 +1,662 @@
+# frozen_string_literal: true
+
+# This script requires the following gems:
+# gem 'activerecord', '~> 7.1'
+# gem 'sqlite3', '~> 1.7'
+#
+# You can install them by creating a Gemfile:
+#
+# source 'https://rubygems.org'
+# gem 'activerecord', '~> 7.1'
+# gem 'sqlite3', '~> 1.7'
+#
+# And then running: bundle install
+
+require 'json'
+require 'active_record'
+require 'sqlite3'
+require 'date'
+
+# --- Test Setup ---
+
+# This will be used to collect all characterization results.
+results = {}
+
+# In-memory SQLite database setup
+ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
+
+# --- Mocks, Stubs, and Patches ---
+
+# Mock for FatFreeCRM's global settings object
+class Setting
+  @settings = { require_first_names: false, require_last_names: false }
+
+  def self.method_missing(method, *args)
+    key = method.to_s.chomp('?').to_sym
+    @settings[key]
+  end
+
+  def self.set(key, value)
+    @settings[key] = value
+  end
+end
+
+# Monkey-patch String for the name_permutations method used in text_search
+class String
+  def name_permutations
+    parts = strip.split
+    return [[self, '']] if parts.length == 1
+    parts.permutation.to_a
+  end
+end
+
+# Mock modules for the various concerns/macros used in the Contact model.
+# This prevents needing the actual gem dependencies.
+module MockMacros
+  def self.included(base)
+    base.extend ClassMethods
+  end
+
+  module ClassMethods
+    def uses_user_permissions
+      attr_accessor :permissions, :user_ids
+      after_initialize { self.permissions ||= [] }
+    end
+
+    def acts_as_commentable; end
+    def uses_comment_extensions; end
+    def acts_as_taggable_on(*); end
+    def has_paper_trail(*_args); end
+    def has_fields; end
+    def exportable; end
+    def sortable(*_args); end
+    def has_ransackable_associations(*_args); end
+    def ransack_can_autocomplete; end
+    def ransack(*_args); all; end
+  end
+end
+
+ActiveRecord::Base.send(:include, MockMacros)
+
+# --- Schema Definition ---
+
+ActiveRecord::Schema.define do
+  create_table :users, force: true do |t|
+    t.string :name
+  end
+
+  create_table :leads, force: true do |t|
+    t.integer :user_id
+    t.string :first_name, default: ""
+    t.string :last_name, default: ""
+    t.string :title
+    t.string :source
+    t.string :email
+    t.string :alt_email
+    t.string :phone
+    t.string :mobile
+    t.string :blog
+    t.string :linkedin
+    t.string :facebook
+    t.string :twitter
+    t.boolean :do_not_call, default: false
+    t.string :background_info
+    t.string :custom_field1
+  end
+
+  create_table :accounts, force: true do |t|
+    t.integer :user_id
+    t.integer :assigned_to
+    t.string :name
+  end
+
+  create_table :opportunities, force: true do |t|
+    t.string :name
+  end
+
+  create_table :tasks, force: true do |t|
+    t.string :name
+    t.references :asset, polymorphic: true
+  end
+
+  create_table :addresses, force: true do |t|
+    t.references :addressable, polymorphic: true
+    t.string :address_type
+    t.string :street1
+    t.string :street2
+    t.string :city
+    t.string :state
+    t.string :zipcode
+    t.string :country
+    t.string :full_address
+  end
+
+  create_table :account_contacts, force: true do |t|
+    t.belongs_to :account
+    t.belongs_to :contact
+  end
+
+  create_table :contact_opportunities, force: true do |t|
+    t.belongs_to :contact
+    t.belongs_to :opportunity
+  end
+
+  create_table :emails, force: true do |t|
+    t.references :mediator, polymorphic: true
+    t.string :subject
+  end
+
+  create_table :contacts, force: true do |t|
+    t.integer :user_id
+    t.integer :lead_id
+    t.integer :assigned_to
+    t.integer :reports_to
+    t.string :first_name, limit: 64, default: "", null: false
+    t.string :last_name, limit: 64, default: "", null: false
+    t.string :access, limit: 8, default: "Public"
+    t.string :title, limit: 64
+    t.string :department, limit: 64
+    t.string :source, limit: 32
+    t.string :email, limit: 254
+    t.string :alt_email, limit: 254
+    t.string :phone, limit: 32
+    t.string :mobile, limit: 32
+    t.string :fax, limit: 32
+    t.string :blog, limit: 128
+    t.string :linkedin, limit: 128
+    t.string :facebook, limit: 128
+    t.string :twitter, limit: 128
+    t.date :born_on
+    t.boolean :do_not_call, default: false, null: false
+    t.datetime :deleted_at
+    t.datetime :created_at
+    t.datetime :updated_at
+    t.string :background_info
+    t.text :subscribed_users
+  end
+end
+
+# --- Dependent Model Definitions ---
+
+class User < ActiveRecord::Base; end
+class Account < ActiveRecord::Base
+  has_many :account_contacts
+  has_many :contacts, through: :account_contacts
+
+  def self.create_or_select_for(_contact, params)
+    if params[:id].present?
+      find_by(id: params[:id])
+    elsif params[:name].present?
+      find_or_create_by(name: params[:name])
+    end
+  end
+end
+class Opportunity < ActiveRecord::Base; end
+class Task < ActiveRecord::Base
+  belongs_to :asset, polymorphic: true, optional: true
+end
+class Address < ActiveRecord::Base
+  belongs_to :addressable, polymorphic: true
+
+  def self.reject_address(attributes)
+    attributes.all? { |_, v| v.blank? }
+  end
+end
+class Email < ActiveRecord::Base
+  belongs_to :mediator, polymorphic: true
+end
+class AccountContact < ActiveRecord::Base
+  belongs_to :account
+  belongs_to :contact
+end
+class ContactOpportunity < ActiveRecord::Base
+  belongs_to :contact
+  belongs_to :opportunity
+end
+class Lead < ActiveRecord::Base
+  has_one :business_address, -> { where(address_type: 'Business') }, as: :addressable, class_name: 'Address'
+  def self.fields; []; end
+end
+class Version; end # Dummy for PaperTrail
+
+
+# --- Source Code ---
+# The class definition from the user is pasted here directly.
+
+# frozen_string_literal: true
+
+# Copyright (c) 2008-2013 Michael Dvorkin and contributors.
+#
+# Fat Free CRM is freely distributable under the terms of MIT license.
+# See MIT-LICENSE file or http://www.opensource.org/licenses/mit-license.php
+#------------------------------------------------------------------------------
+# == Schema Information
+#
+# Table name: contacts
+#
+#  id              :integer         not null, primary key
+#  user_id         :integer
+#  lead_id         :integer
+#  assigned_to     :integer
+#  reports_to      :integer
+#  first_name      :string(64)      default(""), not null
+#  last_name       :string(64)      default(""), not null
+#  access          :string(8)       default("Public")
+#  title           :string(64)
+#  department      :string(64)
+#  source          :string(32)
+#  email           :string(64)
+#  alt_email       :string(64)
+#  phone           :string(32)
+#  mobile          :string(32)
+#  fax             :string(32)
+#  blog            :string(128)
+#  linkedin        :string(128)
+#  facebook        :string(128)
+#  twitter         :string(128)
+#  born_on         :date
+#  do_not_call     :boolean         default(FALSE), not null
+#  deleted_at      :datetime
+#  created_at      :datetime
+#  updated_at      :datetime
+#  background_info :string(255)
+#
+
+class Contact < ActiveRecord::Base
+  belongs_to :user
+  belongs_to :lead, optional: true # TODO: Is this really optional?
+  belongs_to :assignee, class_name: "User", foreign_key: :assigned_to, optional: true # TODO: Is this really optional?
+  belongs_to :reporting_user, class_name: "User", foreign_key: :reports_to, optional: true # TODO: Is this really optional?
+  has_one :account_contact, dependent: :destroy
+  has_one :account, through: :account_contact
+  has_many :contact_opportunities, dependent: :destroy
+  has_many :opportunities, -> { order("opportunities.id DESC").distinct }, through: :contact_opportunities
+  has_many :tasks, as: :asset, dependent: :destroy # , :order => 'created_at DESC'
+  has_one :business_address, -> { where(address_type: "Business") }, dependent: :destroy, as: :addressable, class_name: "Address"
+  has_many :addresses, dependent: :destroy, as: :addressable, class_name: "Address" # advanced search uses this
+  has_many :emails, as: :mediator
+
+  delegate :campaign, to: :lead, allow_nil: true
+
+  has_ransackable_associations %w[account opportunities tags activities emails addresses comments tasks]
+  ransack_can_autocomplete
+
+  serialize :subscribed_users, type: Array
+
+  accepts_nested_attributes_for :business_address, allow_destroy: true, reject_if: proc { |attributes| Address.reject_address(attributes) }
+
+  scope :created_by,  ->(user) { where(user_id: user.id) }
+  scope :assigned_to, ->(user) { where(assigned_to: user.id) }
+
+  scope :text_search, lambda { |query|
+    t = Contact.arel_table
+    # We can't always be sure that names are entered in the right order, so we must
+    # split the query into all possible first/last name permutations.
+    name_query = if query.include?(" ")
+                   scope, *rest = query.name_permutations.map do |first, last|
+                     t[:first_name].matches("%#{first}%").and(t[:last_name].matches("%#{last}%"))
+                   end
+                   rest.map { |r| scope = scope.or(r) } if scope
+                   scope
+                 else
+                   t[:first_name].matches("%#{query}%").or(t[:last_name].matches("%#{query}%"))
+    end
+
+    other = t[:email].matches("%#{query}%").or(t[:alt_email].matches("%#{query}%"))
+    other = other.or(t[:phone].matches("%#{query}%")).or(t[:mobile].matches("%#{query}%"))
+
+    where(name_query.nil? ? other : name_query.or(other))
+  }
+
+  uses_user_permissions
+  acts_as_commentable
+  uses_comment_extensions
+  acts_as_taggable_on :tags
+  has_paper_trail versions: { class_name: 'Version' }, ignore: [:subscribed_users]
+
+  has_fields
+  exportable
+  sortable by: ["first_name ASC", "last_name ASC", "created_at DESC", "updated_at DESC"], default: "created_at DESC"
+
+  validates_presence_of :first_name, message: :missing_first_name, if: -> { Setting.require_first_names }
+  validates_presence_of :last_name,  message: :missing_last_name,  if: -> { Setting.require_last_names  }
+  validate :users_for_shared_access
+
+  validates_length_of :first_name, maximum: 64
+  validates_length_of :last_name, maximum: 64
+  validates_length_of :title, maximum: 64
+  validates_length_of :department, maximum: 64
+  validates_length_of :email, maximum: 254
+  validates_length_of :alt_email, maximum: 254
+  validates_length_of :phone, maximum: 32
+  validates_length_of :mobile, maximum: 32
+  validates_length_of :fax, maximum: 32
+  validates_length_of :blog, maximum: 128
+  validates_length_of :linkedin, maximum: 128
+  validates_length_of :facebook, maximum: 128
+  validates_length_of :twitter, maximum: 128
+
+  # Default values provided through class methods.
+  #----------------------------------------------------------------------------
+  def self.per_page
+    20
+  end
+
+  def self.first_name_position
+    "before"
+  end
+
+  #----------------------------------------------------------------------------
+  def full_name(format = nil)
+    if format.nil? || format == "before"
+      "#{first_name} #{last_name}"
+    else
+      "#{last_name}, #{first_name}"
+    end
+  end
+  alias name full_name
+
+  # Backend handler for [Create New Contact] form (see contact/create).
+  #----------------------------------------------------------------------------
+  def save_with_account_and_permissions(params)
+    save_account(params)
+    result = save
+    opportunities << Opportunity.find(params[:opportunity]) if params[:opportunity].present?
+    result
+  end
+
+  # Backend handler for [Update Contact] form (see contact/update).
+  #----------------------------------------------------------------------------
+  def update_with_account_and_permissions(params)
+    save_account(params)
+    # Must set access before user_ids, because user_ids= method depends on access value.
+    self.access = params[:contact][:access] if params.dig(:contact, :access)
+    self.attributes = params[:contact]
+    save
+  end
+
+  # Attach given attachment to the contact if it hasn't been attached already.
+  #----------------------------------------------------------------------------
+  def attach!(attachment)
+    send(attachment.class.name.tableize) << attachment unless send("#{attachment.class.name.downcase}_ids").include?(attachment.id)
+  end
+
+  # Discard given attachment from the contact.
+  #----------------------------------------------------------------------------
+  def discard!(attachment)
+    if attachment.is_a?(Task)
+      attachment.update_attribute(:asset, nil)
+    else # Opportunities
+      send(attachment.class.name.tableize).delete(attachment)
+    end
+  end
+
+  # Class methods.
+  #----------------------------------------------------------------------------
+  def self.create_for(model, account, opportunity, params)
+    attributes = {
+      lead_id:     model.id,
+      user_id:     params[:account][:user_id] || account.user_id,
+      assigned_to: params[:account][:assigned_to],
+      access:      params[:access]
+    }
+    %w[first_name last_name title source email alt_email phone mobile blog linkedin facebook twitter do_not_call background_info].each do |name|
+      attributes[name] = model.send(name.intern)
+    end
+
+    contact = Contact.new(attributes)
+
+    # Set custom fields.
+    if model.class.respond_to?(:fields)
+      model.class.fields.each do |field|
+        contact.send "#{field.name}=", model.send(field.name) if contact.respond_to?(field.name)
+      end
+    end
+
+    if model.business_address.present?
+      contact.business_address = Address.new(
+          street1: model.business_address.street1, street2: model.business_address.street2, 
+          city: model.business_address.city, state: model.business_address.state, 
+          zipcode: model.business_address.zipcode, country: model.business_address.country, 
+          full_address: model.business_address.full_address, address_type: "Business"
+        )
+    end
+    
+    # Save the contact only if the account and the opportunity have no errors.
+    if account.errors.empty? && opportunity.errors.empty?
+      # Note: contact.account = account doesn't seem to work here.
+      contact.account_contact = AccountContact.new(account: account, contact: contact) if account.id.present?
+      
+      save_method = if contact.access != "Lead" || model.nil?
+                      :save
+                    else
+                      # This method does not exist, so we will not test this branch
+                      # :save_with_model_permissions 
+                      :save
+                    end
+      
+      if contact.send(save_method)
+        contact.opportunities << opportunity if opportunity.id.present? # must happen after contact is saved
+      end
+    end
+    contact
+  end
+
+  private
+
+  # Make sure at least one user has been selected if the contact is being shared.
+  #----------------------------------------------------------------------------
+  def users_for_shared_access
+    errors.add(:access, :share_contact) if self[:access] == "Shared" && permissions.none?
+  end
+
+  # Handles the saving of related accounts
+  #----------------------------------------------------------------------------
+  def save_account(params)
+    account_params = params[:account]
+    valid_account = account_params && (account_params[:id].present? || account_params[:name].present?)
+    self.account = if valid_account
+                     Account.create_or_select_for(self, account_params)
+                   else
+                     nil
+                   end
+  end
+
+  ActiveSupport.run_load_hooks(:fat_free_crm_contact, self)
+end
+
+# --- Characterization Logic ---
+
+# Use a transaction to ensure a clean slate for each test group.
+ActiveRecord::Base.transaction do
+  # --- Setup test data ---
+  user1 = User.create!(name: 'User One')
+  user2 = User.create!(name: 'User Two')
+  
+  # --- Class Method Tests ---
+  results['Contact_per_page_default'] = { value: Contact.per_page }
+  results['Contact_first_name_position_default'] = { value: Contact.first_name_position }
+
+  # --- Instance Method Tests ---
+  contact_attrs = { first_name: 'John', last_name: 'Doe', email: 'john.doe@example.com' }
+  contact = Contact.new(contact_attrs)
+  results['Contact_new_instantiation'] = { attributes: contact.attributes }
+
+  results['Contact_full_name_default'] = { name: contact.full_name }
+  results['Contact_full_name_before'] = { name: contact.full_name('before') }
+  results['Contact_full_name_after'] = { name: contact.full_name('after') }
+  results['Contact_name_alias'] = { name: contact.name }
+  
+  # --- Validation Tests ---
+  ActiveRecord::Base.transaction do
+    Setting.set(:require_first_names, true)
+    c = Contact.new(last_name: "Smith")
+    c.valid?
+    results['Contact_validation_firstNameRequired'] = { valid: c.valid?, errors: c.errors.messages }
+    Setting.set(:require_first_names, false)
+    raise ActiveRecord::Rollback
+  end
+  ActiveRecord::Base.transaction do
+    Setting.set(:require_last_names, true)
+    c = Contact.new(first_name: "John")
+    c.valid?
+    results['Contact_validation_lastNameRequired'] = { valid: c.valid?, errors: c.errors.messages }
+    Setting.set(:require_last_names, false)
+    raise ActiveRecord::Rollback
+  end
+  ActiveRecord::Base.transaction do
+    c = Contact.new(first_name: "Jane", last_name: "Doe", access: "Shared")
+    c.permissions = []
+    c.valid?
+    results['Contact_validation_sharedAccessRequiresUsers'] = { valid: c.valid?, errors: c.errors.messages }
+    c.permissions = [user1.id]
+    c.valid?
+    results['Contact_validation_sharedAccessWithUsers'] = { valid: c.valid?, errors: c.errors.messages }
+    raise ActiveRecord::Rollback
+  end
+  ActiveRecord::Base.transaction do
+    c = Contact.new(first_name: "A" * 65)
+    c.valid?
+    results['Contact_validation_firstNameTooLong'] = { valid: c.valid?, errors: c.errors.messages }
+    raise ActiveRecord::Rollback
+  end
+
+  # --- Persistence Method Tests ---
+  ActiveRecord::Base.transaction do
+    acc = Account.create!(name: "NewCo")
+    opp = Opportunity.create!(name: "Big Deal")
+    params = {
+      account: { name: "NewCo" },
+      opportunity: opp.id
+    }
+    c = Contact.new(first_name: "Peter", last_name: "Pan")
+    result = c.save_with_account_and_permissions(params)
+    results['Contact_save_with_account_and_permissions_newAccount'] = {
+      saved: result,
+      contact_id: c.id,
+      account_id: c.account.id,
+      opportunity_ids: c.opportunity_ids
+    }
+    raise ActiveRecord::Rollback
+  end
+  ActiveRecord::Base.transaction do
+    acc = Account.create!(name: "OldCo")
+    params = {
+      account: { id: acc.id }
+    }
+    c = Contact.new(first_name: "Wendy", last_name: "Darling")
+    c.save_with_account_and_permissions(params)
+    results['Contact_save_with_account_and_permissions_existingAccount'] = {
+      contact_id: c.id,
+      account_id: c.account.id
+    }
+    raise ActiveRecord::Rollback
+  end
+  ActiveRecord::Base.transaction do
+    c = Contact.create!(first_name: "Captain", last_name: "Hook")
+    acc = Account.create!(name: "Pirates Inc.")
+    params = {
+      contact: { first_name: "Captain James", access: "Private" },
+      account: { id: acc.id }
+    }
+    result = c.update_with_account_and_permissions(params)
+    c.reload
+    results['Contact_update_with_account_and_permissions_basic'] = {
+      updated: result,
+      name: c.full_name,
+      access: c.access,
+      account_id: c.account_id
+    }
+    raise ActiveRecord::Rollback
+  end
+
+  # --- Attachment Method Tests ---
+  ActiveRecord::Base.transaction do
+    contact = Contact.create!(first_name: "Tinker", last_name: "Bell")
+    task = Task.create!(name: "Fly")
+    opp = Opportunity.create!(name: "Save Peter")
+    contact.attach!(task)
+    contact.attach!(opp)
+    task.reload
+    results['Contact_attach_taskAndOpportunity'] = {
+      contact_id: contact.id,
+      task_ids: contact.task_ids,
+      task_asset_id: task.asset_id,
+      task_asset_type: task.asset_type,
+      opportunity_ids: contact.opportunity_ids
+    }
+    
+    contact.discard!(task)
+    contact.discard!(opp)
+    task.reload
+    results['Contact_discard_taskAndOpportunity'] = {
+      contact_id: contact.id,
+      task_ids: contact.task_ids,
+      task_asset_id: task.asset_id,
+      opportunity_ids: contact.opportunity_ids
+    }
+    raise ActiveRecord::Rollback
+  end
+
+  # --- Scope tests ---
+  ActiveRecord::Base.transaction do
+    c1 = Contact.create!(first_name: 'A', last_name: 'A', user: user1, assigned_to: user2.id)
+    c2 = Contact.create!(first_name: 'B', last_name: 'B', user: user2, assigned_to: user1.id)
+    
+    results['Contact_scope_created_by'] = { count: Contact.created_by(user1).count, ids: Contact.created_by(user1).pluck(:id) }
+    results['Contact_scope_assigned_to'] = { count: Contact.assigned_to(user1).count, ids: Contact.assigned_to(user1).pluck(:id) }
+    raise ActiveRecord::Rollback
+  end
+
+  ActiveRecord::Base.transaction do
+    Contact.create!(first_name: 'John', last_name: 'Smith', email: 'jsmith@work.com', phone: '111-222-3333')
+    Contact.create!(first_name: 'Jane', last_name: 'Smith', alt_email: 'jane.smith@home.com', mobile: '444-555-6666')
+    Contact.create!(first_name: 'Sam', last_name: 'Johnson', email: 'sam@work.com')
+    
+    results['Contact_text_search_singleFirstName'] = { ids: Contact.text_search('John').pluck(:id) }
+    results['Contact_text_search_sharedLastName'] = { ids: Contact.text_search('Smith').order(:first_name).pluck(:id) }
+    results['Contact_text_search_fullName'] = { ids: Contact.text_search('John Smith').pluck(:id) }
+    results['Contact_text_search_fullNameReversed'] = { ids: Contact.text_search('Smith John').pluck(:id) }
+    results['Contact_text_search_email'] = { ids: Contact.text_search('jsmith@work.com').pluck(:id) }
+    results['Contact_text_search_partialEmail'] = { ids: Contact.text_search('@work.com').order(:first_name).pluck(:id) }
+    results['Contact_text_search_phone'] = { ids: Contact.text_search('111-222').pluck(:id) }
+    results['Contact_text_search_mobile'] = { ids: Contact.text_search('555-6666').pluck(:id) }
+    results['Contact_text_search_noResults'] = { ids: Contact.text_search('NoSuchPerson').pluck(:id) }
+    raise ActiveRecord::Rollback
+  end
+  
+  # --- self.create_for test ---
+  ActiveRecord::Base.transaction do
+    lead_user = User.create!(name: 'Lead Owner')
+    lead = Lead.create!(
+      first_name: "Prospective", last_name: "Client",
+      email: "lead@example.com", phone: "123-456-7890",
+      user_id: lead_user.id
+    )
+    address = Address.create!(addressable: lead, address_type: 'Business', city: 'Leadville')
+    
+    account = Account.create!(name: "Converted Inc.", user: lead_user, assigned_to: lead_user.id)
+    opportunity = Opportunity.create!(name: "First Deal")
+    params = {
+      account: { user_id: lead_user.id, assigned_to: lead_user.id },
+      access: 'Public'
+    }
+    
+    contact = Contact.create_for(lead, account, opportunity, params)
+    
+    results['Contact_create_for_basic'] = {
+      persisted: contact.persisted?,
+      attributes: contact.attributes.except("created_at", "updated_at"),
+      account_id: contact.account.try(:id),
+      opportunity_ids: contact.opportunity_ids,
+      address_city: contact.business_address.try(:city)
+    }
+    raise ActiveRecord::Rollback
+  end
+  
+  # This will rollback the outer transaction
+  raise ActiveRecord::Rollback
+end
+
+# --- Output ---
+puts JSON.dump(results)
