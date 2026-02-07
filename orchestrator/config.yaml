@@ -2,7 +2,7 @@
 # 以 config.yaml 所在資料夾 orchestrator/ 當 base，
 # ".." 會 resolve 成 repo root/
 working_directory: "/workspace"
-ingest_url: "http://repo_ingestion_project_1:8001/ingestion/runs"
+ingest_url: "http://repo_ingestion_project_1:8000/ingestion/runs"
 repo_url: "https://github.com/Careerhack-2026-TSID/xml_parser"
 
 llm:
