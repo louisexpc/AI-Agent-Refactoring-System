@@ -30,12 +30,35 @@ target_dir: "refactor_repo"
 # This template is rendered via Python .format() with:
 # {working_directory}, {source_dir}, {target_dir}, {repo_dir}
 user_input_template: >
-  # Master Protocol: Python-to-Go Refactoring Orchestrator
+  # Master Protocol: Node.js-to-Kotlin Refactoring Orchestrator
 
   **Role**: You are the **Lead Migration Architect & Orchestrator**.
-  **Mission**: Completely refactor a legacy Python codebase into idiomatic Go (Golang), strictly following a multi-stage, test-driven workflow.
+  **Mission**: Completely refactor a legacy Node.js (Express.js + MongoDB/Mongoose) e-commerce backend into idiomatic Kotlin with PostgreSQL using **RAW SQL** (no ORM), strictly following a multi-stage, test-driven workflow.
   **Target Source**: `/workspace/init/{source_dir}/snapshot/repo`
   **Output Destination**: `/workspace/refactor_repo`
+
+  ---
+
+  ## 📋 PROJECT CONTEXT
+
+  **Source Application**: A Node.js e-commerce REST API with the following capabilities:
+  - **User Authentication**: Sign up, login, logout with JWT-based auth
+  - **Product Catalog**: CRUD operations for products with name, price, description
+  - **Shopping Cart**: Add/remove/update product quantities in cart
+  - **Checkout & Orders**: Complete purchases, order history
+  - **Admin Panel**: Admin-only product and category management
+  - **Coupons**: Discount coupon system
+
+  **Source Tech Stack**: Node.js, Express.js, MongoDB (Mongoose ODM), JWT
+  **Source Structure**: `config/`, `models/`, `routes/`, `controllers/`, `middlewares/`, `utils/`
+
+  **Target Tech Stack**: Kotlin, PostgreSQL (RAW SQL — no ORM such as Exposed or Hibernate), JWT
+
+  **Critical Migration Requirements**:
+  - Convert all MongoDB/Mongoose schema definitions and queries to PostgreSQL **RAW SQL** (CREATE TABLE, SELECT, INSERT, UPDATE, DELETE with parameterized queries)
+  - Translate Mongoose's NoSQL document model (nested objects, arrays) into properly normalized relational tables with foreign keys
+  - Preserve all REST API endpoints and business logic behavior
+  - All RAW SQL queries **MUST** be covered by tests
 
   ---
 
@@ -44,6 +67,8 @@ user_input_template: >
   1. **Linear Progression**: You must complete Phase 1 before entering Phase 2. You must complete Stage X before starting Stage X+1.
   2. **Immutable Source**: The `/workspace/init` directory is **READ-ONLY**. Never write to it except for the `/workspace/init/plan` folder.
   3. **State Persistence**: All code must be written to disk. Do not rely on context memory for code storage.
+  4. **RAW SQL Only**: Do NOT use any Kotlin ORM (Exposed, Hibernate, jOOQ). All database interactions must use JDBC with raw SQL strings and parameterized queries.
+  5. **SQL Test Coverage**: Every RAW SQL query (SELECT, INSERT, UPDATE, DELETE, CREATE TABLE) must have at least one test covering it.
 
   ---
 
@@ -60,14 +85,29 @@ user_input_template: >
 
   2. **Source Code Crawl**:
   * Call `list_directory` on `/workspace/init/{source_dir}/snapshot/repo/`.
-  * **Filter**: Identify ALL files ending in `.py`.
-  * **Ingest**: Call `read_file` on **EVERY** identified `.py` file to load the logic into your reasoning context.
+  * **Filter**: Identify ALL files ending in `.js` and `.json` (excluding `node_modules/` and `package-lock.json`).
+  * **Ingest**: Call `read_file` on **EVERY** identified source file to load the logic into your reasoning context.
+  * **Pay special attention to**: Mongoose model schemas in `models/`, route definitions in `routes/`, controller logic in `controllers/`, and middleware in `middlewares/`.
 
 
-  3. **Generate Specification**:
+  3. **Database Schema Design**:
+  * Analyze all Mongoose schemas and map document structures to relational tables.
+  * Identify embedded documents and arrays that need normalization into separate tables.
+  * Design foreign key relationships and indexes.
+  * Document the MongoDB-to-PostgreSQL schema mapping in the spec.
+
+
+  4. **Generate Specification**:
   * Analyze the functional clusters.
   * Create the master plan file at `/workspace/init/plan/spec.md`.
-  * **Requirement**: The `spec.md` must break the migration into specific **Stages** (e.g., Stage 1: Utils, Stage 2: Models, Stage 3: API).
+  * **Requirement**: The `spec.md` must break the migration into specific **Stages**, for example:
+    - Stage 1: Database Schema & Connection (PostgreSQL tables, migration scripts, connection pool)
+    - Stage 2: Models & Data Access Layer (Kotlin data classes + RAW SQL repositories)
+    - Stage 3: Authentication & Middleware (JWT auth, role-based access)
+    - Stage 4: Product & Category APIs (CRUD endpoints)
+    - Stage 5: Cart & Order APIs (Shopping cart, checkout, order history)
+    - Stage 6: Admin & Coupon APIs (Admin panel, coupon management)
+  * Each stage must include a **SQL inventory** listing all RAW SQL queries that will be written.
 
   ---
 
@@ -79,23 +119,29 @@ user_input_template: >
 
   1. **Context Sync**:
   * Read `spec.md` to identify the current Stage.
-  * Read the target Python files for this stage.
+  * Read the target Node.js source files for this stage.
   * (If applicable) Read the `test_report.md` from the previous run.
 
 
   2. **Planning (Mandatory Pre-computation)**:
   * Create a detailed plan at: `/workspace/stage_<X>/run_<I>/stage_plan/stage_<X>_run_<I>.md`.
   * Create the file mapping JSON at: `/workspace/stage_<X>/run_<I>/stage_plan/mapping_<X>_run_<I>.json`.
+  * Include a **SQL query checklist** listing every RAW SQL query in this stage and its corresponding test.
   * *Constraint*: Do not write code until these files exist.
 
 
   3. **Implementation**:
-  * Translate the Python logic to Go.
-  * Write the resulting `.go` files to `/workspace/refactor_repo/...`.
+  * Translate the Node.js logic to Kotlin.
+  * Convert all MongoDB/Mongoose operations to PostgreSQL RAW SQL with parameterized queries.
+  * Write the resulting `.kt` files to `/workspace/refactor_repo/...`.
+  * Write SQL migration scripts (`.sql`) for any new tables introduced in this stage.
 
 
   4. **Verification (The Gatekeeper)**:
-  * Generate and run a **Unit Test** for the new Go code.
+  * Generate and run **Unit Tests** for the new Kotlin code, with special emphasis on:
+    - Every RAW SQL query must be tested (SELECT, INSERT, UPDATE, DELETE)
+    - Edge cases for SQL operations (empty results, constraint violations, etc.)
+    - API endpoint behavior parity with the original Node.js implementation
   * **IF PASS**: Mark Stage <X> as COMPLETE. Proceed to Stage <X+1>.
   * **IF FAIL**: Stop. Analyze the error. Increment the Run ID (Run <I+1>) and restart the **Planning** step for this Stage. **DO NOT** proceed to the next stage until tests pass.
 
@@ -109,13 +155,23 @@ user_input_template: >
   **Trigger**: Execute this ONLY after the final Stage in Phase 2 has passed its unit tests.
 
   1. **Containerization**:
-  * Analyze the full Go codebase in `/workspace/refactor_repo`.
-  * Create a production-ready `Dockerfile` in `/workspace/refactor_repo`.
-  * Create a `docker-compose.yml` (if database/services are required) in `/workspace/refactor_repo`.
+  * Analyze the full Kotlin codebase in `/workspace/refactor_repo`.
+  * Create a production-ready `Dockerfile` in `/workspace/refactor_repo` (multi-stage build with Gradle).
+  * Create a `docker-compose.yml` in `/workspace/refactor_repo` that includes:
+    - The Kotlin application service
+    - A PostgreSQL service with health checks
+    - Volume mounts for database persistence
+    - Environment variables for database connection
+    - SQL migration scripts run on startup
 
 
-  2. **Project Retrospective**:
+  2. **SQL Coverage Report**:
+  * Generate a report listing every RAW SQL query in the codebase and its test coverage status.
+  * Ensure 100% of SQL queries are covered by at least one test.
+
+
+  3. **Project Retrospective**:
   * Generate `/workspace/final_report.md`.
-  * Include: Summary of architecture changes, list of resolved dependency challenges, and instructions on how to build/run the Go project.
+  * Include: Summary of architecture changes, MongoDB-to-PostgreSQL schema mapping, list of all RAW SQL queries, resolved dependency challenges, and instructions on how to build/run the Kotlin project with Docker.
 
 log_filename: "multi_agent.log"
