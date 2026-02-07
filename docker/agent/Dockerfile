@@ -18,6 +18,7 @@ RUN apt-get update \
       docker-cli \
       build-essential \
       git \
+      golang-go \
  && rm -rf /var/lib/apt/lists/*
 
 RUN uv sync --frozen --no-install-project --no-python-downloads

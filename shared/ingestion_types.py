@@ -151,15 +151,18 @@ class DepEdge(BaseModel):
     """Dependency graph 的邊（引用關係）。"""
 
     src: str = Field(..., description="來源檔案相對路徑。")
-    lang: str = Field(..., description="語言識別（如 python/ts）。")
-    ref_kind: DepRefKind = Field(..., description="引用類型（import/include/use...）。")
-    dst_raw: str = Field(..., description="原始引用字串。")
-    dst_norm: str = Field(..., description="正規化後的引用 key。")
+    lang: str = Field(default="unknown", description="語言識別（如 python/ts）。")
+    ref_kind: DepRefKind = Field(default=DepRefKind.OTHER, description="引用類型（import/include/use...）。")
+    dst_raw: str = Field(default="", description="原始引用字串。")
+    dst_norm: str = Field(default="", description="正規化後的引用 key。")
     dst_kind: DepDstKind = Field(
-        ..., description="目的地分類（internal/external 等）。"
+        default=DepDstKind.UNKNOWN, description="目的地分類（internal/external 等）。"
     )
-    range: DepRange = Field(..., description="來源位置範圍。")
-    confidence: float = Field(..., description="信心值（0~1）。")
+    range: DepRange = Field(
+        default_factory=lambda: DepRange(start_line=0, start_col=0, end_line=0, end_col=0),
+        description="來源位置範圍。"
+    )
+    confidence: float = Field(default=0.0, description="信心值（0~1）。")
     dst_resolved_path: str | None = Field(
         default=None, description="解析到的 repo 內部路徑（可為 null）。"
     )
