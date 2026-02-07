@@ -30,92 +30,96 @@ target_dir: "refactor_repo"
 # This template is rendered via Python .format() with:
 # {working_directory}, {source_dir}, {target_dir}, {repo_dir}
 user_input_template: >
-  # Master Protocol: Python-to-Go Refactoring Orchestrator
+  # Master Protocol: Ruby on Rails to Go/React Refactoring Orchestrator
 
-  **Role**: You are the **Lead Migration Architect & Orchestrator**.
-  **Mission**: Completely refactor a legacy Python codebase into idiomatic Go (Golang), strictly following a multi-stage, test-driven workflow.
-  **Target Source**: `/workspace/init/{source_dir}/snapshot/repo`
-  **Output Destination**: `/workspace/refactor_repo`
-
-  ---
-
-  ## 🛑 GLOBAL OPERATIONAL CONSTRAINTS
-
-  1. **Linear Progression**: You must complete Phase 1 before entering Phase 2. You must complete Stage X before starting Stage X+1.
-  2. **Immutable Source**: The `/workspace/init` directory is **READ-ONLY**. Never write to it except for the `/workspace/init/plan` folder.
-  3. **State Persistence**: All code must be written to disk. Do not rely on context memory for code storage.
+  **Role**: You are the **Lead Full-Stack Migration Architect**.
+  **Mission**: Refactor a legacy **Ruby on Rails (MVC)** application into a modern **Frontend-Backend Separated** architecture.
+  **Source Codebase**: `/workspace/init/{source_dir}/snapshot/repo` (Ruby on Rails)
+  **Output Destination**: `/workspace/refactor_repo` (Must be structured into `/backend` and `/frontend`)
 
   ---
 
-  ## 🔹 Phase 1: Deep Analysis & Architectural Specification
+  ## 🎯 REFACTORING TARGETS (STRICT)
 
-  **Objective**: Map the territory and create the battle plan (`spec.md`).
+  1.  **Backend** :
+      * **Language**: Golang (1.21+)
+      * **Framework**: Gin Web Framework
+      * **Architecture**: RESTful API (JSON)
+      * **Deliverable**: `/workspace/refactor_repo/backend`
+      * **Requirement**: Successfully build (`go build`) and pass tests.
+
+  2.  **Frontend** :
+      * **Framework**: ReactJS + TypeScript
+      * **Styling**: TailwindCSS or CSS Modules (Architect's choice)
+      * **Deliverable**: `/workspace/refactor_repo/frontend`
+      * **Requirement**: Successfully build and pass UI tests.
+
+  3.  **Infrastructure** :
+      * **Docker**: Provide `Dockerfile` and `docker-compose.yml` for both services.
+
+  ---
+
+  ## 🔹 Phase 1: Deep Analysis & Architectural Mapping
+
+  **Objective**: Deconstruct the Rails monolith into API contracts and UI components.
 
   **Execution Steps**:
 
-  1. **Ingest Dependency Metadata**:
-  * Call `read_file` on `/workspace/init/{source_dir}/depgraph/dep_graph_light.json`.
-  * Call `read_file` on `/workspace/init/{source_dir}/depgraph/dep_reverse_index_light.json`.
+  1.  **Analyze Data Models (The Domain)**:
+      * Target: `db/schema.rb` and `app/models/*.rb`.
+      * **Action**: Identify all entities and relationships. These will become Go structs in `backend/internal/models`.
 
+  2.  **Analyze Business Logic & Routes**:
+      * Target: `config/routes.rb` and `app/controllers/*.rb`.
+      * **Action**: Map every Rails route to a Gin API endpoint. Extract logic from Controllers to Go Services.
 
-  2. **Source Code Crawl**:
-  * Call `list_directory` on `/workspace/init/{source_dir}/snapshot/repo/`.
-  * **Filter**: Identify ALL files ending in `.py`.
-  * **Ingest**: Call `read_file` on **EVERY** identified `.py` file to load the logic into your reasoning context.
+  3.  **Analyze UI/Views**:
+      * Target: `app/views/**/*.erb`.
+      * **Action**: Identify the UI components needed for the React frontend. Note the data passed from Controllers to Views—this defines your API JSON response structure.
 
-
-  3. **Generate Specification**:
-  * Analyze the functional clusters.
-  * Create the master plan file at `/workspace/init/plan/spec.md`.
-  * **Requirement**: The `spec.md` must break the migration into specific **Stages** (e.g., Stage 1: Utils, Stage 2: Models, Stage 3: API).
+  4.  **Generate Specification (`spec.md`)**:
+      * Create the master plan at `/workspace/init/plan/spec.md`.
+      * **Crucial Requirement**: You MUST define separate Stages for Backend and Frontend.
+      * *Example Staging*:
+          * Stage 1: Backend Domain & Database Layer (Go)
+          * Stage 2: Backend API Implementation (Gin)
+          * Stage 3: Frontend Core & Components (React)
+          * Stage 4: Frontend Integration & Pages
 
   ---
 
   ## 🔸 Phase 2: The Refactoring Loop (Iterative Execution)
 
-  **Protocol**: You must execute the following cycle for **EACH Stage** defined in `spec.md`.
+  **Protocol**: Execute the standard refactoring cycle for **EACH Stage** defined in `spec.md`.
 
-  ### The "Stage X" Cycle:
+  ### Special Instructions for Split Architecture:
 
-  1. **Context Sync**:
-  * Read `spec.md` to identify the current Stage.
-  * Read the target Python files for this stage.
-  * (If applicable) Read the `test_report.md` from the previous run.
+  * **When doing Backend Stages**:
+      * Map `app/models/user.rb` -> `backend/internal/models/user.go`.
+      * Map `app/controllers/users_controller.rb` -> `backend/internal/handlers/user.go`.
+      * Ensure `main.go` sets up the Gin router correctly.
 
+  * **When doing Frontend Stages**:
+      * Map `app/views/users/index.html.erb` -> `frontend/src/pages/Users/UserList.tsx`.
+      * Ensure the React app calls the API endpoints defined in the Backend stages.
 
-  2. **Planning (Mandatory Pre-computation)**:
-  * Create a detailed plan at: `/workspace/stage_<X>/run_<I>/stage_plan/stage_<X>_run_<I>.md`.
-  * Create the file mapping JSON at: `/workspace/stage_<X>/run_<I>/stage_plan/mapping_<X>_run_<I>.json`.
-  * *Constraint*: Do not write code until these files exist.
-
-
-  3. **Implementation**:
-  * Translate the Python logic to Go.
-  * Write the resulting `.go` files to `/workspace/refactor_repo/...`.
-
-
-  4. **Verification (The Gatekeeper)**:
-  * Generate and run a **Unit Test** for the new Go code.
-  * **IF PASS**: Mark Stage <X> as COMPLETE. Proceed to Stage <X+1>.
-  * **IF FAIL**: Stop. Analyze the error. Increment the Run ID (Run <I+1>) and restart the **Planning** step for this Stage. **DO NOT** proceed to the next stage until tests pass.
-
-
-  *Repeat this cycle until ALL stages in `spec.md` are marked Complete.*
+  * **Verification**:
+      * For Go: Run `go test ./...`
+      * For React: Run `npm test` (or equivalent).
+      * **IF FAIL**: Stop, analyze, and fix.
 
   ---
 
   ## 🏁 Phase 3: Finalization & Delivery
 
-  **Trigger**: Execute this ONLY after the final Stage in Phase 2 has passed its unit tests.
+  **Trigger**: Execute this ONLY after all API and UI stages are complete.
 
-  1. **Containerization**:
-  * Analyze the full Go codebase in `/workspace/refactor_repo`.
-  * Create a production-ready `Dockerfile` in `/workspace/refactor_repo`.
-  * Create a `docker-compose.yml` (if database/services are required) in `/workspace/refactor_repo`.
+  1.  **Dockerization**:
+      * Create `backend/Dockerfile` (Multi-stage build for Go).
+      * Create `frontend/Dockerfile` (Node build -> Nginx serve).
+      * Create root `docker-compose.yml` to orchestrate DB, Backend, and Frontend.
 
-
-  2. **Project Retrospective**:
-  * Generate `/workspace/final_report.md`.
-  * Include: Summary of architecture changes, list of resolved dependency challenges, and instructions on how to build/run the Go project.
+  2.  **Final Report**:
+      * Generate `/workspace/final_report.md` summarizing the transition from Rails MVC to Go+React.
 
 log_filename: "multi_agent.log"
