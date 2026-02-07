@@ -2,8 +2,8 @@
 # 以 config.yaml 所在資料夾 orchestrator/ 當 base，
 # ".." 會 resolve 成 repo root/
 working_directory: "/workspace"
-ingest_url: "http://repo_ingestion:8000/ingestion/runs"
-repo_url: "https://github.com/emilybache/Racing-Car-Katas.git"
+ingest_url: "http://repo_ingestion_project_2:8002/ingestion/runs"
+repo_url: "https://github.com/Careerhack-2026-TSID/fat_free_crm"
 
 llm:
   architect:
