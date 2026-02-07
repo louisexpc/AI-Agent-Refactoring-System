@@ -30,10 +30,10 @@ target_dir: "refactor_repo"
 # This template is rendered via Python .format() with:
 # {working_directory}, {source_dir}, {target_dir}, {repo_dir}
 user_input_template: >
-  # Master Protocol: Python-to-Go Refactoring Orchestrator
+  # Master Protocol: C-to-Rust Refactoring Orchestrator (XML Parser Engine)
 
   **Role**: You are the **Lead Migration Architect & Orchestrator**.
-  **Mission**: Completely refactor a legacy Python codebase into idiomatic Go (Golang), strictly following a multi-stage, test-driven workflow.
+  **Mission**: Completely refactor the Expat XML parsing library (~12,000 lines of C) into idiomatic Rust (1.7x+), strictly following a multi-stage, test-driven workflow.
   **Target Source**: `/workspace/init/{source_dir}/snapshot/repo`
   **Output Destination**: `/workspace/refactor_repo`
 
@@ -44,6 +44,13 @@ user_input_template: >
   1. **Linear Progression**: You must complete Phase 1 before entering Phase 2. You must complete Stage X before starting Stage X+1.
   2. **Immutable Source**: The `/workspace/init` directory is **READ-ONLY**. Never write to it except for the `/workspace/init/plan` folder.
   3. **State Persistence**: All code must be written to disk. Do not rely on context memory for code storage.
+  4. **No High-Level XML Libraries**: It is **STRICTLY FORBIDDEN** to use any built-in or third-party high-level XML parsing libraries (e.g., `serde-xml`, `quick-xml`, `xml-rs`). You must implement the parsing logic from scratch.
+  5. **Preserve Architecture**: You **MUST** retain the original layered architecture: **Tokenizer**, **Role Parser**, and **State Machine**. The refactored code must reflect these same separation-of-concerns layers.
+  6. **CLI Interface**: The final binary must be a pure CLI tool named `agent_expat_cli` that reads XML from **STDIN** and outputs parsed results to **STDOUT**.
+  7. **Output Format**: The output must be **100% identical** to the original C `expat_cli`:
+     - `START: tag_name` — when an opening tag is encountered
+     - `END: tag_name` — when a closing tag is encountered
+     - `ATTR: key = value` — for each attribute, printed in the same order as the C version
 
   ---
 
@@ -60,14 +67,22 @@ user_input_template: >
 
   2. **Source Code Crawl**:
   * Call `list_directory` on `/workspace/init/{source_dir}/snapshot/repo/`.
-  * **Filter**: Identify ALL files ending in `.py`.
-  * **Ingest**: Call `read_file` on **EVERY** identified `.py` file to load the logic into your reasoning context.
+  * **Filter**: Identify ALL files ending in `.c` and `.h`.
+  * **Ingest**: Call `read_file` on **EVERY** identified `.c` and `.h` file to load the logic into your reasoning context.
+  * **Key Entry Point**: `main.c` is the CLI entry point; `build.sh` contains the GCC compile commands.
 
 
-  3. **Generate Specification**:
-  * Analyze the functional clusters.
+  3. **Architecture Mapping** (Critical for this project):
+  * Identify and document the **Tokenizer** layer — how raw bytes are consumed and tokens are emitted.
+  * Identify and document the **Role Parser** layer — how tokens are classified (tags, attributes, content, etc.).
+  * Identify and document the **State Machine** layer — how parsing states transition (e.g., inside tag, reading attribute name/value, etc.).
+  * Map all callback/event-driven hooks (start element, end element, character data, etc.).
+
+
+  4. **Generate Specification**:
+  * Analyze the functional clusters and layered architecture.
   * Create the master plan file at `/workspace/init/plan/spec.md`.
-  * **Requirement**: The `spec.md` must break the migration into specific **Stages** (e.g., Stage 1: Utils, Stage 2: Models, Stage 3: API).
+  * **Requirement**: The `spec.md` must break the migration into specific **Stages** that respect the architectural layers (e.g., Stage 1: Core Types & Error Handling, Stage 2: Tokenizer/Lexer, Stage 3: State Machine & Parser, Stage 4: Event Callbacks & API, Stage 5: CLI Integration).
 
   ---
 
@@ -79,7 +94,7 @@ user_input_template: >
 
   1. **Context Sync**:
   * Read `spec.md` to identify the current Stage.
-  * Read the target Python files for this stage.
+  * Read the target C source files (`.c` / `.h`) for this stage.
   * (If applicable) Read the `test_report.md` from the previous run.
 
 
@@ -90,12 +105,16 @@ user_input_template: >
 
 
   3. **Implementation**:
-  * Translate the Python logic to Go.
-  * Write the resulting `.go` files to `/workspace/refactor_repo/...`.
+  * Translate the C logic to idiomatic Rust, preserving the Tokenizer / Role Parser / State Machine layers.
+  * Write the resulting `.rs` files to `/workspace/refactor_repo/...`.
+  * Ensure `Cargo.toml` is properly maintained with the binary target named `agent_expat_cli`.
 
 
   4. **Verification (The Gatekeeper)**:
-  * Generate and run a **Unit Test** for the new Go code.
+  * Build the Rust project with `cargo build` to ensure it compiles.
+  * Generate and run **Unit Tests** (`cargo test`) for the new Rust code.
+  * **Integration Check**: When the CLI stage is complete, verify output matches the C version:
+    `echo '<root><node>Hello AI</node></root>' | ./agent_expat_cli` must produce identical output to `echo '<root><node>Hello AI</node></root>' | ./expat_cli`.
   * **IF PASS**: Mark Stage <X> as COMPLETE. Proceed to Stage <X+1>.
   * **IF FAIL**: Stop. Analyze the error. Increment the Run ID (Run <I+1>) and restart the **Planning** step for this Stage. **DO NOT** proceed to the next stage until tests pass.
 
@@ -108,14 +127,20 @@ user_input_template: >
 
   **Trigger**: Execute this ONLY after the final Stage in Phase 2 has passed its unit tests.
 
-  1. **Containerization**:
-  * Analyze the full Go codebase in `/workspace/refactor_repo`.
-  * Create a production-ready `Dockerfile` in `/workspace/refactor_repo`.
-  * Create a `docker-compose.yml` (if database/services are required) in `/workspace/refactor_repo`.
+  1. **Build Verification**:
+  * Run `cargo build --release` in `/workspace/refactor_repo`.
+  * Confirm the output binary is named `agent_expat_cli`.
+  * Run the full test suite: `cargo test`.
+  * Run the reference comparison: pipe the same XML inputs through both `expat_cli` (C) and `agent_expat_cli` (Rust) and diff the outputs.
 
 
-  2. **Project Retrospective**:
+  2. **Containerization**:
+  * Create a production-ready `Dockerfile` in `/workspace/refactor_repo` (multi-stage build with Rust toolchain).
+  * Create a `docker-compose.yml` if needed in `/workspace/refactor_repo`.
+
+
+  3. **Project Retrospective**:
   * Generate `/workspace/final_report.md`.
-  * Include: Summary of architecture changes, list of resolved dependency challenges, and instructions on how to build/run the Go project.
+  * Include: Summary of architecture mapping (Tokenizer → Role Parser → State Machine), list of resolved challenges, and instructions on how to build/run the Rust project (`cargo build --release`).
 
 log_filename: "multi_agent.log"
