@@ -1,0 +1,402 @@
+An executable C program that encapsulates characterization tests for the given source code.
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <limits.h>
+
+/*
+================================================================
+                 DEPENDENCY SETUP FOR COMPILATION
+================================================================
+This section provides minimal definitions for types and macros
+that are expected by xmltok.c and its headers, but are defined
+in other parts of the expat library not included here.
+*/
+
+/* --- from expat_config.h --- */
+#define XML_NS 1
+#define XML_DTD 1
+#define BYTEORDER 1234 /* Assume little-endian, common for x86 */
+#define HAVE_MEMMOVE 1
+#define XML_CONTEXT_BYTES 1024
+
+/* --- from expat.h --- */
+#define XMLCALL
+#define PTRCALL
+#define PTRFASTCALL
+typedef unsigned long XML_Size;
+typedef void *XML_Parser; /* Dummy parser handle */
+
+/* --- from internal.h --- */
+#ifndef UNUSED_P
+#  define UNUSED_P(p) (void)p
+#endif
+#define FASTCALL
+#define inline /* Define as empty to avoid compilation issues */
+
+/*
+ * The function _INTERNAL_trim_to_complete_utf8_characters is declared
+ * in internal.h and defined in xmltok.c. The linker will resolve this.
+ */
+void _INTERNAL_trim_to_complete_utf8_characters(const char *from,
+                                                const char **fromLimRef);
+
+/* --- from the missing xmltok_impl.h (inferred) --- */
+/*
+ * This enum provides the byte type constants used in the parsing tables
+ * (e.g., asciitab.h) and the tokenizer logic. This is necessary for
+ * xmltok.c to compile.
+ */
+enum {
+  BT_NONXML, BT_MALFORM, BT_LT, BT_AMP, BT_RSQB, BT_LEAD2, BT_LEAD3, BT_LEAD4,
+  BT_TRAIL, BT_CR, BT_LF, BT_S, BT_EXCL, BT_QUOT, BT_NUM, BT_PERCNT,
+  BT_APOS, BT_LPAR, BT_RPAR, BT_AST, BT_PLUS, BT_COMMA, BT_MINUS,
+  BT_NAME, BT_SOL, BT_DIGIT, BT_COLON, BT_SEMI, BT_EQUALS, BT_GT,
+  BT_QUEST, BT_OTHER, BT_HEX, BT_NMSTRT, BT_LSQB, BT_VERBAR
+};
+
+/*
+================================================================
+                 END OF DEPENDENCY SETUP
+================================================================
+*/
+
+#include "xmltok.h"
+
+/*
+================================================================
+                    TEST HELPER FUNCTIONS
+================================================================
+*/
+
+// Escapes a string for safe printing in a JSON context.
+void json_escape_len(const char *str, size_t len) {
+    for (size_t i = 0; i < len; ++i) {
+        const unsigned char c = str[i];
+        switch (c) {
+            case '"':  printf("\\\""); break;
+            case '\\': printf("\\\\"); break;
+            case '\b': printf("\\b");  break;
+            case '\f': printf("\\f");  break;
+            case '\n': printf("\\n");  break;
+            case '\r': printf("\\r");  break;
+            case '\t': printf("\\t");  break;
+            default:
+                if (c < ' ' || c >= 127) {
+                    printf("\\u%04x", c);
+                } else {
+                    putchar(c);
+                }
+                break;
+        }
+    }
+}
+
+// Mock converter for testing XmlInitUnknownEncoding.
+// A simple "TEST-8" encoding: 0x80 -> Euro, 0x81 -> invalid, 0x82xx -> 2-byte seq.
+int XMLCALL mock_converter(void *userData, const char *p) {
+    UNUSED_P(userData);
+    switch ((unsigned char)*p) {
+        case 0x80: return 0x20AC; // Euro sign
+        case 0x81: return -1;     // Invalid character
+        case 0x82: return 0x00C4; // 'Ä' (as part of a hypothetical 2-byte sequence)
+        default:   return (unsigned char)*p;
+    }
+}
+
+// Mock encoding finder for XmlParseXmlDecl.
+const ENCODING* mock_encoding_finder(const ENCODING *enc, const char *name, const char *ptr) {
+    UNUSED_P(enc);
+    UNUSED_P(name);
+    UNUSED_P(ptr);
+    return NULL; // Simulate not finding a specific encoding.
+}
+
+// Helper to print tokenization results.
+void print_scan_result(const char* key, int tok, const char *start, const char *next, const char *end) {
+    printf("\"%s\": {", key);
+    printf("\"token_id\": %d, ", tok);
+    printf("\"consumed_bytes\": %ld, ", next ? (long)(next - start) : 0L);
+    printf("\"token_string\": \"");
+    if (next && next > start) {
+        json_escape_len(start, next - start);
+    }
+    printf("\", ");
+    printf("\"is_final\": %s", (next && next == end) ? "true" : "false");
+    printf("},\n");
+}
+
+
+/*
+================================================================
+                        TESTS
+================================================================
+*/
+
+void test_XmlUtf8Encode() {
+    char buf[XML_UTF8_ENCODE_MAX];
+    int len;
+
+    len = XmlUtf8Encode(0x41, buf);
+    printf("\"XmlUtf8Encode_ASCII_A\": {\"len\": %d, \"bytes\": \"\\u%04x\"},\n", len, (unsigned char)buf[0]);
+
+    len = XmlUtf8Encode(0, buf);
+    printf("\"XmlUtf8Encode_Null\": {\"len\": %d, \"bytes\": \"\\u%04x\"},\n", len, (unsigned char)buf[0]);
+
+    len = XmlUtf8Encode(0xA2, buf); // ¢
+    printf("\"XmlUtf8Encode_2_byte\": {\"len\": %d, \"bytes\": \"\\u%04x\\u%04x\"},\n", len, (unsigned char)buf[0], (unsigned char)buf[1]);
+
+    len = XmlUtf8Encode(0x20AC, buf); // €
+    printf("\"XmlUtf8Encode_3_byte\": {\"len\": %d, \"bytes\": \"\\u%04x\\u%04x\\u%04x\"},\n", len, (unsigned char)buf[0], (unsigned char)buf[1], (unsigned char)buf[2]);
+
+    len = XmlUtf8Encode(0x1F600, buf); // 😀
+    printf("\"XmlUtf8Encode_4_byte\": {\"len\": %d, \"bytes\": \"\\u%04x\\u%04x\\u%04x\\u%04x\"},\n", len, (unsigned char)buf[0], (unsigned char)buf[1], (unsigned char)buf[2], (unsigned char)buf[3]);
+
+    len = XmlUtf8Encode(-1, buf);
+    printf("\"XmlUtf8Encode_Invalid_Negative\": {\"len\": %d},\n", len);
+
+    len = XmlUtf8Encode(0x110000, buf);
+    printf("\"XmlUtf8Encode_Invalid_OutOfRange\": {\"len\": %d},\n", len);
+    
+    len = XmlUtf8Encode(0xD800, buf);
+    printf("\"XmlUtf8Encode_Invalid_Surrogate\": {\"len\": %d},\n", len);
+}
+
+void test_XmlUtf16Encode() {
+    unsigned short buf[XML_UTF16_ENCODE_MAX];
+    int len;
+
+    len = XmlUtf16Encode(0x41, buf);
+    printf("\"XmlUtf16Encode_BMP_ASCII\": {\"len\": %d, \"units\": [%u]},\n", len, buf[0]);
+
+    len = XmlUtf16Encode(0x20AC, buf);
+    printf("\"XmlUtf16Encode_BMP_Multibyte\": {\"len\": %d, \"units\": [%u]},\n", len, buf[0]);
+
+    len = XmlUtf16Encode(0xFFFF, buf);
+    printf("\"XmlUtf16Encode_BMP_Edge\": {\"len\": %d, \"units\": [%u]},\n", len, buf[0]);
+    
+    len = XmlUtf16Encode(0x10000, buf);
+    printf("\"XmlUtf16Encode_SurrogatePair_First\": {\"len\": %d, \"units\": [%u, %u]},\n", len, buf[0], buf[1]);
+
+    len = XmlUtf16Encode(0x10FFFF, buf);
+    printf("\"XmlUtf16Encode_SurrogatePair_Last\": {\"len\": %d, \"units\": [%u, %u]},\n", len, buf[0], buf[1]);
+
+    len = XmlUtf16Encode(-1, buf);
+    printf("\"XmlUtf16Encode_Invalid_Negative\": {\"len\": %d},\n", len);
+
+    len = XmlUtf16Encode(0x110000, buf);
+    printf("\"XmlUtf16Encode_Invalid_OutOfRange\": {\"len\": %d},\n", len);
+}
+
+void test_InitEncodings() {
+    INIT_ENCODING ie;
+    const ENCODING* enc;
+
+    XmlInitEncoding(&ie, &enc, "UTF-8");
+    printf("\"XmlInitEncoding_UTF8\": {\"isUtf8\": %d, \"isUtf16\": %d, \"minBytesPerChar\": %d},\n", enc->isUtf8, enc->isUtf16, enc->minBytesPerChar);
+
+    XmlInitEncoding(&ie, &enc, "ISO-8859-1");
+    printf("\"XmlInitEncoding_ISO88591\": {\"isUtf8\": %d, \"isUtf16\": %d, \"minBytesPerChar\": %d},\n", enc->isUtf8, enc->isUtf16, enc->minBytesPerChar);
+
+    XmlInitEncoding(&ie, &enc, "UTF-16");
+    printf("\"XmlInitEncoding_UTF16\": {\"isUtf8\": %d, \"isUtf16\": %d, \"minBytesPerChar\": %d},\n", enc->isUtf8, enc->isUtf16, enc->minBytesPerChar);
+
+    XmlInitEncoding(&ie, &enc, "NON_EXISTENT");
+    printf("\"XmlInitEncoding_Unknown\": {\"isUtf8\": %d, \"isUtf16\": %d, \"minBytesPerChar\": %d},\n", enc->isUtf8, enc->isUtf16, enc->minBytesPerChar);
+}
+
+void test_GetEncodings() {
+    const ENCODING* enc;
+    
+    enc = XmlGetUtf8InternalEncoding();
+    printf("\"XmlGetUtf8InternalEncoding\": {\"isUtf8\": %d, \"isUtf16\": %d, \"minBytesPerChar\": %d},\n", enc->isUtf8, enc->isUtf16, enc->minBytesPerChar);
+
+    enc = XmlGetUtf16InternalEncoding();
+    printf("\"XmlGetUtf16InternalEncoding\": {\"isUtf8\": %d, \"isUtf16\": %d, \"minBytesPerChar\": %d},\n", enc->isUtf8, enc->isUtf16, enc->minBytesPerChar);
+    
+    enc = XmlGetUtf8InternalEncodingNS();
+    printf("\"XmlGetUtf8InternalEncodingNS\": {\"isUtf8\": %d, \"isUtf16\": %d, \"minBytesPerChar\": %d},\n", enc->isUtf8, enc->isUtf16, enc->minBytesPerChar);
+
+    enc = XmlGetUtf16InternalEncodingNS();
+    printf("\"XmlGetUtf16InternalEncodingNS\": {\"isUtf8\": %d, \"isUtf16\": %d, \"minBytesPerChar\": %d},\n", enc->isUtf8, enc->isUtf16, enc->minBytesPerChar);
+}
+
+void test_UnknownEncoding() {
+    printf("\"XmlSizeOfUnknownEncoding\": %d,\n", XmlSizeOfUnknownEncoding());
+
+    void* mem = malloc(XmlSizeOfUnknownEncoding());
+    if (!mem) return;
+    int table[256];
+    for (int i = 0; i < 128; i++) table[i] = i;
+    for (int i = 128; i < 256; i++) table[i] = -1; // Default to invalid
+    
+    table[0x80] = 0x20AC; // Map 0x80 to Euro
+    table[0x81] = -1;     // Malformed
+    table[0x82] = -2;     // 2-byte sequence start
+
+    ENCODING *enc = XmlInitUnknownEncoding(mem, table, mock_converter, NULL);
+    printf("\"XmlInitUnknownEncoding_Valid\": {\"success\": %s, \"minBytesPerChar\": %d},\n", enc ? "true" : "false", enc ? enc->minBytesPerChar : -1);
+
+    if (enc) {
+        const char *from = "\x80 \x81 \x82A";
+        const char *from_lim = from + strlen(from);
+        char to[32];
+        char *to_p = to;
+        const char *to_lim = to + sizeof(to);
+        enum XML_Convert_Result res = XmlUtf8Convert(enc, &from, from_lim, &to_p, to_lim);
+        *to_p = '\0';
+        
+        printf("\"XmlUtf8Convert_FromUnknown\": {\"result\": %d, \"output\": \"", res);
+        json_escape_len(to, strlen(to));
+        printf("\"},\n");
+    }
+
+    free(mem);
+}
+
+void test_Tokenizers() {
+    const ENCODING *enc = XmlGetUtf8InternalEncodingNS();
+    const char *next;
+
+    const char *xml1 = "<?xml version='1.0'?><!DOCTYPE doc [ ]><a>hello</a>";
+    const char *p = xml1;
+    const char *end = xml1 + strlen(xml1);
+    int i = 0;
+    while(p < end) {
+        char key[64];
+        snprintf(key, sizeof(key), "XmlPrologTok_SimpleDoc_%d", i++);
+        int tok = XmlPrologTok(enc, p, end, &next);
+        print_scan_result(key, tok, p, next, end);
+        if (tok <= 0 || tok == XML_TOK_INSTANCE_START) break;
+        p = next;
+    }
+
+    const char* content = "text &amp; &#65; <!-- comment --> <tag/> ]]> ";
+    p = content;
+    end = content + strlen(content);
+    i = 0;
+    while(p < end) {
+        char key[64];
+        snprintf(key, sizeof(key), "XmlContentTok_Variety_%d", i++);
+        int tok = XmlContentTok(enc, p, end, &next);
+        print_scan_result(key, tok, p, next, end);
+        if (tok <= 0) break;
+        p = next;
+    }
+
+    const char* partial = "<tag att";
+    int tok = XmlContentTok(enc, partial, partial + strlen(partial), &next);
+    printf("\"XmlContentTok_Partial\": {\"token_id\": %d},\n", tok);
+    
+    const char* invalid = "<tag!>";
+    tok = XmlContentTok(enc, invalid, invalid + strlen(invalid), &next);
+    printf("\"XmlContentTok_Invalid\": {\"token_id\": %d, \"offset\": %ld},\n", tok, next - invalid);
+
+    const char* cdata_close = "]]>";
+    tok = XmlCdataSectionTok(enc, cdata_close, cdata_close + strlen(cdata_close), &next);
+    printf("\"XmlCdataSectionTok_Close\": {\"token_id\": %d},\n", tok);
+}
+
+void test_ParseXmlDecl() {
+    const ENCODING *enc = XmlGetUtf8InternalEncodingNS();
+    const char *badPtr, *versionPtr, *versionEndPtr, *encodingNamePtr;
+    const ENCODING *namedEnc;
+    int standalone;
+    int res;
+
+    const char *decl1 = "<?xml version='1.0' encoding='UTF-8' standalone='yes'?>";
+    standalone = -1;
+    res = XmlParseXmlDeclNS(0, enc, decl1, decl1 + strlen(decl1), &badPtr, &versionPtr, &versionEndPtr, &encodingNamePtr, &namedEnc, &standalone);
+    printf("\"XmlParseXmlDeclNS_Full\": {\"result\": %d, \"standalone\": %d},\n", res, standalone);
+
+    const char *decl2 = "<?xml version='1.0'?>";
+    standalone = -1;
+    res = XmlParseXmlDeclNS(0, enc, decl2, decl2 + strlen(decl2), &badPtr, &versionPtr, &versionEndPtr, &encodingNamePtr, &namedEnc, &standalone);
+    printf("\"XmlParseXmlDeclNS_VersionOnly\": {\"result\": %d, \"standalone\": %d},\n", res, standalone);
+
+    const char *decl3 = "<?xml standalone='yes'?>";
+    standalone = -1;
+    res = XmlParseXmlDeclNS(0, enc, decl3, decl3 + strlen(decl3), &badPtr, &versionPtr, &versionEndPtr, &encodingNamePtr, &namedEnc, &standalone);
+    printf("\"XmlParseXmlDeclNS_InvalidOrder\": {\"result\": %d, \"badPtr_offset\": %ld},\n", res, badPtr - decl3);
+
+    const char *decl4 = "<?xml version='1.0' standalone='maybe'?>";
+    standalone = -1;
+    res = XmlParseXmlDeclNS(0, enc, decl4, decl4 + strlen(decl4), &badPtr, &versionPtr, &versionEndPtr, &encodingNamePtr, &namedEnc, &standalone);
+    printf("\"XmlParseXmlDeclNS_InvalidStandaloneValue\": {\"result\": %d, \"badPtr_offset\": %ld},\n", res, badPtr - decl4);
+}
+
+void test_Helpers() {
+    const ENCODING *enc = XmlGetUtf8InternalEncodingNS();
+    const char *s;
+    
+    s = "p:name";
+    printf("\"XmlNameLength_Prefixed\": %d,\n", XmlNameLength(enc, s));
+
+    s = "  \r\n str";
+    const char *skipped = XmlSkipS(enc, s);
+    printf("\"XmlSkipS_Simple\": {\"offset\": %ld},\n", skipped - s);
+
+    const char* ref1 = "&#123;";
+    printf("\"XmlCharRefNumber_Decimal\": %d,\n", XmlCharRefNumber(enc, ref1));
+
+    const char* ref2 = "&#x7B;";
+    printf("\"XmlCharRefNumber_Hex\": %d,\n", XmlCharRefNumber(enc, ref2));
+
+    const char* entity1 = "lt";
+    printf("\"XmlPredefinedEntityName_lt\": %d,\n", XmlPredefinedEntityName(enc, entity1, entity1 + 2));
+    
+    const char* entity2 = "invalid";
+    printf("\"XmlPredefinedEntityName_invalid\": %d,\n", XmlPredefinedEntityName(enc, entity2, entity2 + 7));
+
+    const char* pos_str = "line1\nline2\r\nline3";
+    POSITION pos = {0, 0};
+    XmlUpdatePosition(enc, pos_str, pos_str + strlen(pos_str), &pos);
+    printf("\"XmlUpdatePosition_Simple\": {\"line\": %lu, \"col\": %lu},\n", (unsigned long)pos.lineNumber, (unsigned long)pos.columnNumber);
+
+    const char* pid_valid = "\"PUBLIC 'abc'\"";
+    const char* bad_ptr = NULL;
+    printf("\"XmlIsPublicId_Valid\": %d,\n", XmlIsPublicId(enc, pid_valid, pid_valid + strlen(pid_valid), &bad_ptr));
+
+    const char* pid_invalid = "\"PUBLIC '\t'\"";
+    bad_ptr = NULL;
+    XmlIsPublicId(enc, pid_invalid, pid_invalid + strlen(pid_invalid), &bad_ptr);
+    printf("\"XmlIsPublicId_Invalid\": {\"badPtr_offset\": %ld},\n", bad_ptr ? (bad_ptr - pid_invalid) : -1L);
+
+    const char *atts_str = " a='1' b=\"2\" />";
+    ATTRIBUTE atts[2];
+    int n_atts = XmlGetAttributes(enc, atts_str, 2, atts);
+    printf("\"XmlGetAttributes_Simple\": {\"count\": %d, \"att0_name\": \"", n_atts);
+    if (n_atts > 0) json_escape_len(atts[0].name, 1);
+    printf("\", \"att1_name\": \"");
+    if (n_atts > 1) json_escape_len(atts[1].name, 1);
+    printf("\"},\n");
+
+}
+
+/*
+================================================================
+                         MAIN
+================================================================
+*/
+int main(void) {
+    printf("{\n");
+
+    test_XmlUtf8Encode();
+    test_XmlUtf16Encode();
+    test_GetEncodings();
+    test_InitEncodings();
+    test_UnknownEncoding();
+    test_ParseXmlDecl();
+    test_Tokenizers();
+    test_Helpers();
+
+    /* Sentinel entry for clean JSON formatting */
+    printf("\"_last_entry\": null\n");
+
+    printf("}\n");
+    return 0;
+}

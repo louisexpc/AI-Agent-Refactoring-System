@@ -1,0 +1,134 @@
+#!/usr/bin/env ruby
+
+require 'json'
+require 'bundler/inline'
+
+# Use bundler/inline to manage dependencies in this self-contained script.
+# This avoids the need for a separate Gemfile.
+gemfile do
+  source 'https://rubygems.org'
+  # The schema file uses ActiveRecord 7.1 syntax (`ActiveRecord::Schema[7.1]`).
+  gem 'activerecord', '~> 7.1.0'
+  # Use SQLite3 for an in-memory database, which requires no external setup.
+  gem 'sqlite3'
+end
+
+require 'active_record'
+require 'logger'
+
+# The main hash to store all characterization results.
+results = {}
+
+begin
+  # --- Setup Phase ---
+
+  # The schema.rb file prints logs to standard output when loaded.
+  # To ensure our script only outputs the final JSON, we temporarily redirect
+  # stdout to /dev/null during the schema loading process.
+  original_stdout = $stdout
+  $stdout = File.open(File::NULL, 'w')
+
+  # Establish a connection to an in-memory SQLite database.
+  # This creates a sandboxed environment where the schema can be loaded
+  # and inspected without affecting any real database.
+  ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
+  
+  # --- Execution Phase ---
+  
+  # The primary "behavior" of schema.rb is to define the database structure.
+  # We trigger this behavior by loading the file, which executes the
+  # `ActiveRecord::Schema.define` block against our in-memory database.
+  load '/workspace/init/0cc74088f6a14cce8c6e06b8dd77d165/snapshot/repo/db/schema.rb'
+  results['Schema_define_execution_status'] = 'success'
+
+rescue LoadError => e
+  results['Schema_define_execution_status'] = 'error'
+  results['Schema_define_execution_error'] = { class: e.class.to_s, message: e.message }
+ensure
+  # Restore standard output regardless of success or failure.
+  $stdout.close
+  $stdout = original_stdout
+end
+
+if results['Schema_define_execution_status'] == 'error'
+  puts JSON.dump(results)
+  exit
+end
+
+begin
+  # --- Characterization Phase ---
+  # After loading the schema, we introspect the database connection to capture
+  # the structure that was created. This serves as a snapshot of the schema's behavior.
+
+  connection = ActiveRecord::Base.connection
+
+  # Get a list of all tables created by the schema.
+  tables = connection.tables.sort
+  results['Schema_introspection_tables'] = {
+    count: tables.length,
+    names: tables
+  }
+
+  # For each table, characterize its columns, indexes, and foreign keys.
+  tables.each do |table_name|
+    # Characterize columns for the current table.
+    columns = connection.columns(table_name).map do |col|
+      {
+        name: col.name,
+        type: col.type,
+        sql_type: col.sql_type,
+        limit: col.limit,
+        precision: col.precision,
+        scale: col.scale,
+        default: col.default,
+        default_function: col.default_function,
+        null: col.null,
+        collation: col.collation
+      }
+    end
+    results["Table_#{table_name}_columns"] = columns
+
+    # Characterize indexes for the current table.
+    indexes = connection.indexes(table_name).map do |idx|
+      {
+        name: idx.name,
+        unique: idx.unique,
+        columns: idx.columns,
+        orders: idx.orders,
+        where: idx.where,
+        using: idx.using
+      }
+    end
+    results["Table_#{table_name}_indexes"] = indexes
+
+    # Characterize foreign keys originating from the current table.
+    # The sqlite3 adapter for Rails supports this introspection.
+    foreign_keys = connection.foreign_keys(table_name).map do |fk|
+      {
+        from_table: fk.from_table,
+        to_table: fk.to_table,
+        column: fk.column,
+        primary_key: fk.primary_key,
+        name: fk.name,
+        on_delete: fk.on_delete,
+        on_update: fk.on_update
+      }
+    end
+    # Only add the foreign key info if any exist to keep the output cleaner.
+    unless foreign_keys.empty?
+      results["Table_#{table_name}_foreignKeys"] = foreign_keys
+    end
+  end
+
+rescue => e
+  # Catch any unexpected errors during the introspection phase.
+  results['Introspection_error'] = {
+    class: e.class.to_s,
+    message: e.message,
+    backtrace: e.backtrace.first(5)
+  }
+end
+
+# --- Output Phase ---
+# Print the final results hash as a single JSON line to standard output.
+puts JSON.dump(results)

@@ -1,0 +1,357 @@
+require 'json'
+require 'active_record'
+require 'timecop'
+require 'securerandom'
+
+# --- Set up a testing environment ---
+
+# 1. Mock external dependencies that are not available in the sandbox.
+# Mock ActiveRecord::Base methods that would be defined by gems like devise and paper_trail
+class ActiveRecord::Base
+  def self.devise(*_args)
+    # This is a placeholder for the devise gem's class method.
+  end
+
+  def self.has_paper_trail(*_args)
+    # This is a placeholder for the paper_trail gem's class method.
+  end
+
+  # Mock for CanCanCan's accessible_by
+  def self.accessible_by(_ability)
+    all
+  end
+end
+
+# Mock global Setting object
+class Setting
+  class << self
+    attr_accessor :user_signup
+  end
+end
+
+# Mock Ability class (from CanCanCan)
+class Ability
+  def initialize(user); end
+end
+
+# Mock I18n to capture translation keys
+module I18n
+  def self.t(key, _options = {})
+    key
+  end
+  class << self
+    attr_accessor :locale
+  end
+end
+I18n.locale = :en_US
+
+# 2. Set up an in-memory SQLite database.
+ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
+
+# 3. Define the schema based on the file's comments.
+ActiveRecord::Schema.define do
+  create_table :users do |t|
+    t.string :username, limit: 32, default: "", null: false
+    t.string :email, limit: 254, default: "", null: false
+    t.string :first_name, limit: 32
+    t.string :last_name, limit: 32
+    t.string :title, limit: 64
+    t.string :company, limit: 64
+    t.string :alt_email, limit: 64
+    t.string :phone, limit: 32
+    t.string :mobile, limit: 32
+    t.string :aim, limit: 32
+    t.string :yahoo, limit: 32
+    t.string :google, limit: 32
+    t.string :encrypted_password, default: "", null: false
+    t.string :password_salt, default: "", null: false
+    t.datetime :last_sign_in_at
+    t.datetime :current_sign_in_at
+    t.string :last_sign_in_ip
+    t.string :current_sign_in_ip
+    t.integer :sign_in_count, default: 0, null: false
+    t.datetime :deleted_at
+    t.boolean :admin, default: false, null: false
+    t.datetime :suspended_at
+    t.string :unconfirmed_email, limit: 254, default: "", null: false
+    t.string :reset_password_token
+    t.datetime :reset_password_sent_at
+    t.string :remember_token
+    t.datetime :remember_created_at
+    t.string :authentication_token
+    t.string :confirmation_token
+    t.datetime :confirmed_at
+    t.datetime :confirmation_sent_at
+    t.timestamps null: false
+  end
+
+  create_table :opportunities do |t|
+    t.integer :user_id # created_by
+    t.integer :assigned_to
+    t.string :stage
+    t.string :name
+  end
+
+  # Generic table for asset types used in has_related_assets?
+  %i[accounts campaigns leads contacts comments tasks].each do |table_name|
+    create_table table_name do |t|
+      t.integer :user_id     # created_by
+      t.integer :assigned_to # assigned_to
+    end
+  end
+
+  create_table :permissions
+  create_table :preferences do |t|
+    t.integer :user_id
+    t.string :locale
+  end
+  create_table :lists
+  create_table :avatars
+  create_table :comments
+  create_table :versions
+  create_table :groups
+  create_table :groups_users
+end
+
+# 4. Define mock models for associations.
+# These need to exist for the User class to load its associations.
+class ApplicationRecord < ActiveRecord::Base
+  self.abstract_class = true
+  # Add scopes needed by has_related_assets?
+  scope :created_by, ->(user) { where(user_id: user.id) }
+  scope :assigned_to, ->(user) { where(assigned_to: user.id) }
+end
+
+class Avatar < ApplicationRecord; end
+class Comment < ApplicationRecord; end
+class Account < ApplicationRecord; end
+class Campaign < ApplicationRecord; end
+class Lead < ApplicationRecord; end
+class Contact < ApplicationRecord; end
+class Opportunity < ApplicationRecord; end
+class Permission < ApplicationRecord; end
+class Preference < ApplicationRecord
+  belongs_to :user
+end
+class List < ApplicationRecord; end
+class Group < ApplicationRecord; end
+class Version < ApplicationRecord; end
+class Task < ApplicationRecord; end # Not an explicit association, but used in has_related_assets?
+
+# --- Load The Target Code ---
+
+# The source file has a scope that conflicts with a method in modern ActiveRecord,
+# causing a fatal ArgumentError on class load. We read the source, comment out
+# the offending line, and then eval the code to define the class.
+source_code_path = File.expand_path(File.join(__dir__, '../../init/0cc74088f6a14cce8c6e06b8dd77d165/snapshot/repo/app/models/users/user.rb'))
+source_code = File.read(source_code_path)
+
+modified_source_code = source_code.sub(
+  "scope :without_user, ->(user) { where('id != ?', user.id).by_name }",
+  "# scope :without_user, ->(user) { where('id != ?', user.id).by_name } # NOTE: This line causes an ArgumentError on class load"
+)
+
+# Load the modified class definition
+eval(modified_source_code, binding, source_code_path)
+
+# --- Post-load Monkey Patches & Mocks ---
+
+# Devise adds methods to the class that are called via `super`. We need to
+# provide a base implementation for these methods by prepending a module.
+module DeviseSuperMocks
+  def active_for_authentication?
+    true # This is Devise's base implementation
+  end
+
+  def inactive_message
+    :inactive # This is Devise's base implementation
+  end
+end
+User.prepend(DeviseSuperMocks)
+
+
+# --- Characterization Tests ---
+
+results = {}
+
+# Wrap everything in a transaction to keep the DB clean.
+ActiveRecord::Base.transaction do
+  # --- Test Data Setup ---
+  User.create(username: "alpha", first_name: "Alpha", last_name: "One", email: "alpha@example.com", password: "password")
+  User.create(username: "bravo", first_name: "Bravo", last_name: "Two", email: "bravo@example.com", password: "password")
+  User.create(username: "charlie", first_name: "Charlie", last_name: "Three", email: "charlie@example.com", password: "password")
+
+  # --- Instance Method Tests ---
+  user_with_name = User.new(username: "tester", first_name: "John", last_name: "Doe", email: "john.doe@example.com")
+  user_no_name = User.new(username: "nameless", email: "nameless@example.com")
+
+  results['User_name_withFirstName'] = user_with_name.name
+  results['User_name_withoutFirstName'] = user_no_name.name
+
+  results['User_full_name_withFirstAndLastName'] = user_with_name.full_name
+  user_with_name.last_name = nil
+  results['User_full_name_withFirstNameOnly'] = user_with_name.full_name
+  user_with_name.first_name = nil
+  user_with_name.last_name = "Doe"
+  results['User_full_name_withLastNameOnly'] = user_with_name.full_name
+  results['User_full_name_withoutFirstOrLastName'] = user_no_name.full_name
+
+  suspended_user = User.new(suspended_at: Time.now)
+  active_user = User.new(suspended_at: nil)
+  results['User_suspended_isSuspended'] = suspended_user.suspended?
+  results['User_suspended_isNotSuspended'] = active_user.suspended?
+
+  Timecop.freeze(Time.now) do
+    # `awaits_approval?` depends on `Setting.user_signup`
+    Setting.user_signup = :needs_approval
+    approved_user = User.new(sign_in_count: 1, suspended_at: nil)
+    pending_user = User.new(sign_in_count: 0, suspended_at: Time.now)
+    results['User_awaits_approval_isAwaiting'] = pending_user.awaits_approval?
+    results['User_awaits_approval_isNotAwaiting_approved'] = approved_user.awaits_approval?
+
+    Setting.user_signup = :allowed
+    results['User_awaits_approval_isNotAwaiting_settingAllowed'] = pending_user.awaits_approval?
+    Setting.user_signup = :needs_approval # reset
+
+    # `active_for_authentication?` and `inactive_message`
+    unconfirmed_user = User.new
+    confirmed_suspended_user = User.new(confirmed_at: Time.now, suspended_at: Time.now)
+    confirmed_pending_user = User.new(confirmed_at: Time.now, sign_in_count: 0, suspended_at: Time.now)
+    confirmed_active_user = User.new(confirmed_at: Time.now)
+
+    results['User_active_for_authentication_unconfirmed'] = unconfirmed_user.active_for_authentication?
+    results['User_active_for_authentication_suspended'] = confirmed_suspended_user.active_for_authentication?
+    results['User_active_for_authentication_pendingApproval'] = confirmed_pending_user.active_for_authentication?
+    results['User_active_for_authentication_active'] = confirmed_active_user.active_for_authentication?
+
+    results['User_inactive_message_unconfirmed'] = unconfirmed_user.inactive_message
+    results['User_inactive_message_suspended'] = confirmed_suspended_user.inactive_message
+    results['User_inactive_message_pendingApproval'] = confirmed_pending_user.inactive_message
+    results['User_inactive_message_super'] = confirmed_active_user.inactive_message # Falls through to super
+
+    # `emailable?`
+    results['User_emailable_isEmailable'] = confirmed_active_user.emailable?
+    results['User_emailable_isNotEmailable_unconfirmed'] = unconfirmed_user.emailable?
+    results['User_emailable_isNotEmailable_pending'] = confirmed_pending_user.emailable?
+    unconfirmed_user.email = ""
+    results['User_emailable_isNotEmailable_noEmail'] = unconfirmed_user.emailable?
+  end
+
+  # `preference` and `set_individual_locale`
+  user_for_locale = User.new
+  initial_locale = I18n.locale
+  pref = user_for_locale.preference
+  pref_alias = user_for_locale.pref
+  results['User_preference_isNewRecord'] = pref.new_record?
+  results['User_pref_alias_isNewRecord'] = pref_alias.new_record?
+  
+  pref.locale = 'fr'
+  user_for_locale.set_individual_locale
+  results['User_set_individual_locale_changesLocale'] = I18n.locale
+  I18n.locale = initial_locale # Restore global state
+  results['User_set_individual_locale_restoredLocale'] = I18n.locale
+
+  # `to_json` and `to_xml`
+  results['User_to_json_output'] = user_with_name.to_json
+  results['User_to_xml_output'] = user_with_name.to_xml
+
+  # `password_required?`
+  new_user = User.new
+  persisted_user = User.first
+  persisted_user.password = nil # clear password fields
+  persisted_user.password_confirmation = nil
+
+  results['User_password_required_forNewUser'] = new_user.password_required?
+  results['User_password_required_forPersistedUserNoChange'] = persisted_user.password_required?
+  persisted_user.password = 'newpass'
+  results['User_password_required_forPersistedUserWithChange'] = persisted_user.password_required?
+
+  # `ability`
+  results['User_ability_returnsAbilityObject'] = user_with_name.ability.class.name
+
+  # `destroyable?`
+  u1 = User.first
+  u2 = User.last
+  results['User_destroyable_isNotDestroyable_self'] = u1.destroyable?(u1)
+  results['User_destroyable_isDestroyable_otherUserNoAssets'] = u2.destroyable?(u1)
+  Lead.create!(user_id: u2.id) # u2 now has a related asset
+  results['User_destroyable_isNotDestroyable_otherUserWithAssets'] = u2.destroyable?(u1)
+
+  # `suspend_if_needs_approval` (before_create callback)
+  Timecop.freeze(Time.now) do
+    Setting.user_signup = :needs_approval
+    user_to_suspend = User.create(username: 'suspendme', email: 'suspend@me.com', password: 'password')
+    results['User_suspend_if_needs_approval_suspendsOnCreate'] = !user_to_suspend.suspended_at.nil?
+    
+    admin_to_not_suspend = User.create(username: 'admin_nosuspend', email: 'admin@nosuspend.com', password: 'password', admin: true)
+    results['User_suspend_if_needs_approval_doesNotSuspendAdmin'] = admin_to_not_suspend.suspended_at.nil?
+
+    Setting.user_signup = :allowed
+    user_not_to_suspend = User.create(username: 'nosuspend', email: 'no@suspend.com', password: 'password')
+    results['User_suspend_if_needs_approval_doesNotSuspendWhenAllowed'] = user_not_to_suspend.suspended_at.nil?
+    Setting.user_signup = :needs_approval # reset
+  end
+
+  # `has_related_assets?`
+  assetless_user = User.create!(username: 'assetless', email: 'asset@less.com', password: 'password')
+  assetful_user = User.create!(username: 'assetful', email: 'asset@ful.com', password: 'password')
+  Opportunity.create!(user_id: assetful_user.id) # created_by asset
+  results['User_has_related_assets_isFalseForNewUser'] = assetless_user.has_related_assets?
+  results['User_has_related_assets_isTrueWithAsset'] = assetful_user.has_related_assets?
+
+  # --- Class Method Tests ---
+  
+  # `can_signup?`
+  Setting.user_signup = :allowed
+  results['User_can_signup_isTrueWhenAllowed'] = User.can_signup?
+  Setting.user_signup = :needs_approval
+  results['User_can_signup_isTrueWhenNeedsApproval'] = User.can_signup?
+  Setting.user_signup = :disabled
+  results['User_can_signup_isFalseWhenDisabled'] = User.can_signup?
+
+  # `find_for_database_authentication`
+  auth_user = User.create!(username: 'authuser', email: 'auth@user.com', password: 'password')
+  found_by_email = User.find_for_database_authentication(email: 'auth@user.com')
+  found_by_username = User.find_for_database_authentication(email: 'authuser')
+  found_by_case = User.find_for_database_authentication(email: 'AuthUser')
+  not_found = User.find_for_database_authentication(email: 'nobody')
+  
+  results['User_find_for_database_authentication_byEmail'] = found_by_email&.username
+  results['User_find_for_database_authentication_byUsername'] = found_by_username&.username
+  results['User_find_for_database_authentication_byCaseInsensitiveUsername'] = found_by_case&.username
+  results['User_find_for_database_authentication_notFound'] = not_found.nil?
+
+  # --- Scope Tests ---
+  User.delete_all
+  u_z = User.create!(id: 10, first_name: 'Zoe', last_name: 'Zebra', email: 'zoe@example.com', username: 'zoe')
+  u_a = User.create!(id: 11, first_name: 'Adam', last_name: 'Apple', email: 'adam@example.com', username: 'adam')
+  u_b = User.create!(id: 12, first_name: 'Bob', last_name: 'Banana', email: 'bob@example.com', username: 'bob')
+
+  results['User_scope_by_id'] = User.by_id.map(&:id)
+  results['User_scope_by_name'] = User.by_name.map(&:first_name)
+  
+  results['User_scope_without_user'] = 'Skipped: This scope definition causes a fatal ArgumentError on class load in modern ActiveRecord.'
+
+  results['User_scope_text_search_byUsername'] = User.text_search('zoe').map(&:username)
+  results['User_scope_text_search_byFirstName'] = User.text_search('Adam').map(&:username)
+  results['User_scope_text_search_byLastNamePartial'] = User.text_search('ana').map(&:username)
+  results['User_scope_text_search_byEmail'] = User.text_search('bob@ex').map(&:username)
+  results['User_scope_text_search_withSpecialChars'] = User.text_search("a'd-am").map(&:username)
+  results['User_scope_text_search_noResults'] = User.text_search('no-one').map(&:username)
+  
+  results['User_scope_my_returnsAllWithMockedAbility'] = User.my(u_a).count == User.count
+  
+  # `have_assigned_opportunities`
+  Opportunity.delete_all
+  user_with_opp = User.create!(username: 'sales', email: 'sales@example.com')
+  user_without_opp = User.create!(username: 'support', email: 'support@example.com')
+  Opportunity.create!(assigned_to: user_with_opp.id, stage: 'prospecting')
+  Opportunity.create!(assigned_to: user_with_opp.id, stage: 'won') # should be excluded
+
+  results['User_scope_have_assigned_opportunities_findsUser'] = User.have_assigned_opportunities.map(&:username)
+  
+  # Raise an exception to roll back the transaction, leaving the database pristine.
+  raise ActiveRecord::Rollback
+end
+
+puts JSON.dump(results)

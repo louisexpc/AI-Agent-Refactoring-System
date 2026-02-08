@@ -1,0 +1,654 @@
+To run this script, you will need to install the following gems: `activerecord`, `sqlite3`.
+You can install them by running:
+`gem install activerecord sqlite3`
+
+```ruby
+require 'json'
+require 'active_record'
+require 'sqlite3'
+require 'ostruct'
+
+# --- Mocks and Stubs ---
+
+# Mock for global settings
+class Setting
+  @settings = {
+    require_unique_account_names: true,
+    account_category: [
+      %w[Customer Customer],
+      %w[Partner Partner],
+      %w[Vendor Vendor]
+    ]
+  }
+
+  def self.[](key)
+    @settings[key]
+  end
+
+  def self.method_missing(method, *args, &block)
+    if @settings.key?(method)
+      @settings[method]
+    elsif method.to_s.end_with?('=')
+      @settings[method.to_s.chomp('=').to_sym] = args.first
+    else
+      super
+    end
+  end
+
+  def self.unroll(key)
+    self[key]
+  end
+end
+
+# Mocks for gems/concerns
+module ActsAsCommentable
+  def self.included(base)
+    base.extend ClassMethods
+  end
+  module ClassMethods
+    def acts_as_commentable; end
+  end
+end
+
+module UsesCommentExtensions
+  def self.included(base)
+    base.extend ClassMethods
+  end
+  module ClassMethods
+    def uses_comment_extensions; end
+  end
+end
+
+module ActsAsTaggableOn
+  module Taggable
+    def self.included(base)
+      base.extend ClassMethods
+    end
+    module ClassMethods
+      def acts_as_taggable_on(*args); end
+    end
+  end
+end
+
+module FatFreeCRM
+  module Exportable
+    def self.included(base)
+      base.extend ClassMethods
+    end
+    module ClassMethods
+      def exportable; end
+    end
+  end
+
+  module Sortable
+    def self.included(base)
+      base.extend ClassMethods
+    end
+    module ClassMethods
+      def sortable(*args); end
+    end
+  end
+
+  module HasFields
+    def self.included(base)
+      base.extend ClassMethods
+    end
+    module ClassMethods
+      def has_fields; end
+    end
+  end
+
+  module Permissions
+    def self.included(base)
+      base.extend ClassMethods
+    end
+    module ClassMethods
+      def uses_user_permissions
+        has_many :permissions, as: :asset, class_name: "Permission", dependent: :destroy
+      end
+    end
+  end
+
+  module Ransackable
+    def self.included(base)
+      base.extend ClassMethods
+    end
+
+    module ClassMethods
+      def has_ransackable_associations(*_args); end
+      def ransack_can_autocomplete; end
+      def ransack(*_args)
+        # Return a mock relation that can be chained with .result
+        mock_relation = Class.new do
+          def initialize(scope)
+            @scope = scope
+          end
+
+          def result
+            @scope
+          end
+        end
+        mock_relation.new(all)
+      end
+    end
+  end
+end
+
+ActiveRecord::Base.include(ActsAsTaggableOn::Taggable)
+ActiveRecord::Base.include(FatFreeCRM::Permissions)
+ActiveRecord::Base.include(FatFreeCRM::Ransackable)
+
+# Minimal ActiveRecord models for associations
+class User < ActiveRecord::Base; end
+class Contact < ActiveRecord::Base; end
+class Opportunity < ActiveRecord::Base
+  scope :pipeline, -> { where(stage: 'pipeline') }
+end
+class Task < ActiveRecord::Base
+  belongs_to :asset, polymorphic: true, optional: true
+end
+class Email < ActiveRecord::Base; end
+class Version < ActiveRecord::Base; end
+class Comment < ActiveRecord::Base; end
+class Permission < ActiveRecord::Base
+  belongs_to :asset, polymorphic: true
+end
+class AccountContact < ActiveRecord::Base
+  belongs_to :account
+  belongs_to :contact
+end
+class AccountOpportunity < ActiveRecord::Base
+  belongs_to :account
+  belongs_to :opportunity
+end
+class Address < ActiveRecord::Base
+  def self.reject_address(attributes)
+    attributes['street1'].blank? && attributes['city'].blank?
+  end
+end
+
+
+# --- Database Setup ---
+def setup_database
+  ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
+  ActiveRecord::Base.logger = nil # Suppress logs
+
+  ActiveRecord::Schema.define do
+    create_table :accounts, force: true do |t|
+      t.integer :user_id
+      t.integer :assigned_to
+      t.string :name, limit: 64, default: "", null: false
+      t.string :access, limit: 8, default: "Public"
+      t.string :website, limit: 64
+      t.string :toll_free_phone, limit: 32
+      t.string :phone, limit: 32
+      t.string :fax, limit: 32
+      t.datetime :deleted_at
+      t.datetime :created_at
+      t.datetime :updated_at
+      t.string :email, limit: 64
+      t.string :background_info, limit: 255
+      t.integer :rating, default: 0, null: false
+      t.string :category, limit: 32
+      t.text :subscribed_users
+      t.decimal :latitude
+      t.decimal :longitude
+    end
+
+    create_table :users, force: true do |t|
+      t.string :username
+    end
+
+    create_table :contacts, force: true do |t|
+      t.string :first_name
+    end
+
+    create_table :account_contacts, force: true do |t|
+      t.integer :account_id
+      t.integer :contact_id
+    end
+
+    create_table :opportunities, force: true do |t|
+        t.string :name
+        t.string :stage
+    end
+
+    create_table :account_opportunities, force: true do |t|
+      t.integer :account_id
+      t.integer :opportunity_id
+    end
+
+    create_table :tasks, force: true do |t|
+      t.string :name
+      t.integer :asset_id
+      t.string :asset_type
+    end
+
+    create_table :addresses, force: true do |t|
+      t.integer :addressable_id
+      t.string :addressable_type
+      t.string :address_type
+      t.string :street1
+      t.string :street2
+      t.string :city
+      t.string :state
+      t.string :zipcode
+      t.string :country
+    end
+
+    create_table :emails, force: true do |t|
+      t.integer :mediator_id
+      t.string :mediator_type
+    end
+
+    create_table :permissions, force: true do |t|
+        t.integer :user_id
+        t.integer :asset_id
+        t.string :asset_type
+    end
+
+    create_table :versions, force: true do |t| # for paper_trail
+      t.string :item_type
+      t.integer :item_id
+      t.string :event
+      t.string :whodunnit
+      t.text :object
+      t.datetime :created_at
+    end
+  end
+end
+
+# --- Module under test ---
+# frozen_string_literal: true
+
+# Copyright (c) 2008-2013 Michael Dvorkin and contributors.
+#
+# Fat Free CRM is freely distributable under the terms of MIT license.
+# See MIT-LICENSE file or http://www.opensource.org/licenses/mit-license.php
+#------------------------------------------------------------------------------
+# == Schema Information
+#
+# Table name: accounts
+#
+#  id              :integer         not null, primary key
+#  user_id         :integer
+#  assigned_to     :integer
+#  name            :string(64)      default(""), not null
+#  access          :string(8)       default("Public")
+#  website         :string(64)
+#  toll_free_phone :string(32)
+#  phone           :string(32)
+#  fax             :string(32)
+#  deleted_at      :datetime
+#  created_at      :datetime
+#  updated_at      :datetime
+#  email           :string(64)
+#  background_info :string(255)
+#  rating          :integer         default(0), not null
+#  category        :string(32)
+#
+
+class Account < ActiveRecord::Base
+  belongs_to :user, optional: true # TODO: Is this really optional?
+  belongs_to :assignee, class_name: "User", foreign_key: :assigned_to, optional: true
+  has_many :account_contacts, dependent: :destroy
+  has_many :contacts, -> { distinct }, through: :account_contacts
+  has_many :account_opportunities, dependent: :destroy
+  has_many :opportunities, -> { order("opportunities.id DESC").distinct }, through: :account_opportunities
+  has_many :pipeline_opportunities, -> { order("opportunities.id DESC").distinct.pipeline }, through: :account_opportunities, source: :opportunity
+  has_many :tasks, as: :asset, dependent: :destroy # , :order => 'created_at DESC'
+  has_one :billing_address, -> { where(address_type: "Billing") }, dependent: :destroy, as: :addressable, class_name: "Address"
+  has_one :shipping_address, -> { where(address_type: "Shipping") }, dependent: :destroy, as: :addressable, class_name: "Address"
+  has_many :addresses, dependent: :destroy, as: :addressable, class_name: "Address" # advanced search uses this
+  has_many :emails, as: :mediator
+
+  serialize :subscribed_users, type: Array
+
+  accepts_nested_attributes_for :billing_address,  allow_destroy: true, reject_if: proc { |attributes| Address.reject_address(attributes) }
+  accepts_nested_attributes_for :shipping_address, allow_destroy: true, reject_if: proc { |attributes| Address.reject_address(attributes) }
+
+  scope :state, lambda { |filters|
+    where('category IN (?)' + (filters.delete('other') ? ' OR category IS NULL' : ''), filters)
+  }
+  scope :created_by,  ->(user) { where(user_id: user.id) }
+  scope :assigned_to, ->(user) { where(assigned_to: user.id) }
+
+  scope :text_search, ->(query) { ransack('name_or_email_cont' => query).result }
+
+  scope :visible_on_dashboard, lambda { |user|
+    # Show accounts which either belong to the user and are unassigned, or are assigned to the user
+    where('(user_id = :user_id AND assigned_to IS NULL) OR assigned_to = :user_id', user_id: user.id)
+  }
+
+  scope :by_name, -> { order(:name) }
+
+  uses_user_permissions
+  acts_as_commentable
+  uses_comment_extensions
+  acts_as_taggable_on :tags
+  # Mock paper_trail to avoid errors
+  def self.has_paper_trail(*_args); end
+  has_paper_trail versions: { class_name: 'Version' }, ignore: [:subscribed_users]
+  
+  include FatFreeCRM::HasFields
+  include FatFreeCRM::Exportable
+  include FatFreeCRM::Sortable
+  
+  sortable by: ["name ASC", "rating DESC", "created_at DESC", "updated_at DESC"], default: "created_at DESC"
+
+  has_ransackable_associations %w[contacts opportunities tags activities emails addresses comments tasks]
+  ransack_can_autocomplete
+
+  validates_presence_of :name, message: :missing_account_name
+  validates_uniqueness_of :name, scope: :deleted_at, if: -> { Setting.require_unique_account_names }
+  validates :rating, inclusion: { in: 0..5 }, allow_blank: true
+  validates :category, inclusion: { in: proc { Setting.unroll(:account_category).map { |s| s.last.to_s } } }, allow_blank: true
+  validates :latitude, numericality: { greater_than_or_equal_to: -90, less_than_or_equal_to: 90, allow_blank: true }
+  validates :longitude, numericality: { greater_than_or_equal_to: -180, less_than_or_equal_to: 180, allow_blank: true }
+  validate :users_for_shared_access
+
+  before_save :nullify_blank_category
+
+  # Default values provided through class methods.
+  #----------------------------------------------------------------------------
+  def self.per_page
+    20
+  end
+
+  # Extract last line of billing address and get rid of numeric zipcode.
+  #----------------------------------------------------------------------------
+  def location
+    return "" unless self.billing_address
+
+    address_string = self.billing_address.to_s
+    return "" if address_string.blank?
+    
+    location = address_string.strip.split("\n").last
+    location&.gsub(/(^|\s+)\d+(:?\s+|$)/, " ")&.strip
+  end
+  
+  class ::Address
+    def to_s
+      [street1, street2, city, state, zipcode, country].compact.reject(&:blank?).join("\n")
+    end
+  end
+
+  # Attach given attachment to the account if it hasn't been attached already.
+  #----------------------------------------------------------------------------
+  def attach!(attachment)
+    case attachment
+    when Contact
+      self.contacts << attachment unless self.contact_ids.include?(attachment.id)
+    when Opportunity
+      self.opportunities << attachment unless self.opportunity_ids.include?(attachment.id)
+    end
+  end
+
+  # Discard given attachment from the account.
+  #----------------------------------------------------------------------------
+  def discard!(attachment)
+    if attachment.is_a?(Task)
+      attachment.update_attribute(:asset, nil)
+    else 
+      case attachment
+      when Contact
+        self.contacts.delete(attachment)
+      when Opportunity
+        self.opportunities.delete(attachment)
+      end
+    end
+  end
+
+  # Class methods.
+  #----------------------------------------------------------------------------
+  def self.create_or_select_for(model, params)
+    return Account.find(params[:id]) if params[:id].present?
+
+    if params[:name].present?
+      account = Account.find_by(name: params[:name])
+      return account if account
+    end
+
+    # Fallback to create new account
+    params[:user] = model.user if model
+    account = Account.new(params)
+    if account.access != "Lead" || model.nil?
+      account.save
+    else
+      # Mocking save_with_model_permissions
+      def account.save_with_model_permissions(model)
+        @saved_with_model = model
+        save
+      end
+      account.save_with_model_permissions(model)
+    end
+    account
+  end
+
+  private
+
+  # Make sure at least one user has been selected if the account is being shared.
+  #----------------------------------------------------------------------------
+  def users_for_shared_access
+    errors.add(:access, :share_account) if self[:access] == "Shared" && permissions.none?
+  end
+
+  def nullify_blank_category
+    self.category = nil if category.blank?
+  end
+
+  ActiveSupport.run_load_hooks(:fat_free_crm_account, self)
+end
+
+# --- Test Execution ---
+
+def run_tests
+  results = {}
+  
+  # Teardown and setup for each test group
+  def reset_db
+    ActiveRecord::Base.connection.tables.each do |table|
+      ActiveRecord::Base.connection.execute("DELETE FROM #{table}")
+    end
+  end
+  
+  # --- CLASS METHOD TESTS ---
+  
+  results['Account_per_page_default'] = { value: Account.per_page }
+
+  # Test create_or_select_for
+  begin
+    reset_db
+    user = User.create!(username: 'testuser')
+    existing_account = Account.create!(id: 101, name: 'Existing Co', user: user)
+    
+    selected_by_id = Account.create_or_select_for(nil, { id: 101, name: 'Ignored Name' })
+    results['Account_create_or_select_for_select_by_id'] = { selected_id: selected_by_id.id, selected_name: selected_by_id.name }
+    
+    selected_by_name = Account.create_or_select_for(nil, { name: 'Existing Co' })
+    results['Account_create_or_select_for_select_by_name'] = { selected_id: selected_by_name.id, selected_name: selected_by_name.name }
+
+    new_account = Account.create_or_select_for(nil, { name: 'New Co', email: 'new@co.com' })
+    results['Account_create_or_select_for_create_new'] = { id_present: new_account.id.present?, name: new_account.name, email: new_account.email }
+    
+    model_double = double = OpenStruct.new(user: user)
+    new_account_with_user = Account.create_or_select_for(model_double, { name: 'Another New Co' })
+    results['Account_create_or_select_for_create_with_user'] = { name: new_account_with_user.name, user_id: new_account_with_user.user_id }
+
+    model_double = double = OpenStruct.new(user: user)
+    lead_account = Account.create_or_select_for(model_double, { name: 'Lead Co', access: 'Lead' })
+    results['Account_create_or_select_for_create_lead_with_permissions'] = { name: lead_account.name, access: lead_account.access, saved_with_model: lead_account.instance_variable_get('@saved_with_model') == model_double }
+
+    invalid_account = Account.create_or_select_for(nil, { email: 'no@name.com' })
+    results['Account_create_or_select_for_create_invalid'] = { persisted: invalid_account.persisted?, errors: invalid_account.errors.full_messages }
+
+  rescue => e
+    results['Account_create_or_select_for_error'] = { error: e.message, backtrace: e.backtrace.first(5) }
+  end
+
+  # --- INSTANCE METHOD TESTS ---
+  
+  begin
+    reset_db
+    account_no_address = Account.create!(name: "No Address Inc")
+    results['Account_location_without_address'] = { location: account_no_address.location }
+
+    account_with_address = Account.create!(name: "Address Inc")
+    account_with_address.create_billing_address(street1: "123 Main St", city: "Anytown", state: "CA", zipcode: "90210")
+    results['Account_location_with_address_and_zip'] = { location: account_with_address.location }
+    
+    account_with_multiline = Account.create!(name: "Multiline Inc")
+    account_with_multiline.create_billing_address(
+      street1: "Suite 400", street2: "456 Side St", city: "Someplace", state: "NY", zipcode: "10001"
+    )
+    results['Account_location_with_multiline_address'] = { location: account_with_multiline.location }
+    
+    account_with_address.billing_address = nil
+    results['Account_location_with_nil_address'] = { location: account_with_address.location }
+  rescue => e
+    results['Account_location_error'] = { error: e.message, backtrace: e.backtrace.first(5) }
+  end
+
+  begin
+    reset_db
+    account = Account.create!(name: 'Attachment Test')
+    contact1 = Contact.create!(first_name: 'John')
+    opportunity1 = Opportunity.create!(name: 'Big Deal')
+    task1 = Task.create!(name: 'Follow up')
+
+    account.attach!(contact1)
+    account.attach!(opportunity1)
+    task1.update!(asset: account)
+    results['Account_attach_initial'] = { contact_ids: account.contact_ids, opportunity_ids: account.opportunity_ids, task_asset_id: Task.first.asset_id }
+
+    account.attach!(contact1)
+    results['Account_attach_duplicate'] = { contact_ids: account.contact_ids }
+
+    account.discard!(contact1)
+    account.discard!(opportunity1)
+    account.discard!(task1)
+    task1.reload
+    results['Account_discard'] = { contact_ids: account.contact_ids, opportunity_ids: account.opportunity_ids, task_asset_id: task1.asset_id, task_asset_type: task1.asset_type }
+  rescue => e
+    results['Account_attach_discard_error'] = { error: e.message, backtrace: e.backtrace.first(5) }
+  end
+
+  # --- VALIDATION TESTS ---
+  begin
+    reset_db
+    
+    a1 = Account.new(name: "")
+    a1.valid?
+    results['Account_validation_name_presence_fail'] = { valid: a1.valid?, errors: a1.errors.messages }
+    
+    Setting.require_unique_account_names = true
+    Account.create!(name: 'Unique Corp')
+    a2 = Account.new(name: 'Unique Corp')
+    a2.valid?
+    results['Account_validation_name_uniqueness_fail'] = { valid: a2.valid?, errors: a2.errors.messages }
+
+    Setting.require_unique_account_names = false
+    a3 = Account.new(name: 'Unique Corp')
+    a3.valid?
+    results['Account_validation_name_uniqueness_pass_when_disabled'] = { valid: a3.valid?, errors: a3.errors.messages }
+    Setting.require_unique_account_names = true
+
+    a4 = Account.new(name: 'Rating Test', rating: 6); a4.valid?
+    results['Account_validation_rating_inclusion_fail'] = { valid: a4.valid?, errors: a4.errors.messages }
+    a5 = Account.new(name: 'Rating Test', rating: 5); a5.valid?
+    results['Account_validation_rating_inclusion_pass'] = { valid: a5.valid?, errors: a5.errors.messages }
+    a6 = Account.new(name: 'Rating Test', rating: nil); a6.valid?
+    results['Account_validation_rating_inclusion_pass_blank'] = { valid: a6.valid?, errors: a6.errors.messages }
+
+    a7 = Account.new(name: 'Category Test', category: 'InvalidCategory'); a7.valid?
+    results['Account_validation_category_inclusion_fail'] = { valid: a7.valid?, errors: a7.errors.messages }
+    a8 = Account.new(name: 'Category Test', category: 'Customer'); a8.valid?
+    results['Account_validation_category_inclusion_pass'] = { valid: a8.valid?, errors: a8.errors.messages }
+
+    a9 = Account.new(name: 'Share Test', access: 'Shared'); a9.valid?
+    results['Account_validation_shared_access_fail'] = { valid: a9.valid?, errors: a9.errors.messages }
+    a10 = Account.new(name: 'Share Test', access: 'Shared')
+    a10.permissions.build(user_id: 1)
+    a10.valid?
+    results['Account_validation_shared_access_pass'] = { valid: a10.valid?, errors: a10.errors.messages }
+    
+  rescue => e
+    results['Account_validation_error'] = { error: e.message, backtrace: e.backtrace.first(5) }
+  end
+
+  # --- CALLBACK TESTS ---
+  begin
+    reset_db
+    account = Account.create(name: 'Callback Test', category: '')
+    results['Account_callback_nullify_blank_category'] = { category_before_save: '', category_after_save: account.reload.category }
+  rescue => e
+    results['Account_callback_error'] = { error: e.message, backtrace: e.backtrace.first(5) }
+  end
+
+  # --- SCOPE TESTS ---
+  begin
+    reset_db
+    u1 = User.create!(username: "user1")
+    u2 = User.create!(username: "user2")
+    Account.create!(name: 'A Corp', user: u1, assigned_to: u1, category: 'Customer', rating: 5)
+    Account.create!(name: 'B Corp', user: u1, assigned_to: u2, category: 'Partner', rating: 4)
+    Account.create!(name: 'C Corp', user: u2, assigned_to: nil, category: 'Customer', rating: 3)
+    Account.create!(name: 'D Corp', user: u2, assigned_to: u1, category: nil, rating: 2, email: 'd@corp.com')
+
+    results['Account_scope_state_single'] = { names: Account.state(['Customer']).pluck(:name).sort }
+    results['Account_scope_state_multiple'] = { names: Account.state(['Customer', 'Partner']).pluck(:name).sort }
+    results['Account_scope_state_with_other'] = { names: Account.state(['Customer', 'other']).pluck(:name).sort }
+    results['Account_scope_created_by'] = { names: Account.created_by(u1).pluck(:name).sort }
+    results['Account_scope_assigned_to'] = { names: Account.assigned_to(u1).pluck(:name).sort }
+    results['Account_scope_visible_on_dashboard_u2'] = { names: Account.visible_on_dashboard(u2).pluck(:name).sort }
+    results['Account_scope_by_name'] = { names: Account.by_name.pluck(:name) }
+    
+    allow(Account).to receive(:ransack) do |*args|
+        query = args[0]['name_or_email_cont']
+        mock_relation = if query == 'Corp'
+            Account.where("name LIKE '%Corp%'")
+        elsif query == 'd@corp.com'
+            Account.where(email: 'd@corp.com')
+        else
+            Account.none
+        end
+        OpenStruct.new(result: mock_relation)
+    end
+    results['Account_scope_text_search_name'] = { names: Account.text_search('Corp').pluck(:name).sort }
+    results['Account_scope_text_search_email'] = { names: Account.text_search('d@corp.com').pluck(:name).sort }
+    results['Account_scope_text_search_no_match'] = { names: Account.text_search('nomatch').pluck(:name) }
+
+  rescue => e
+    results['Account_scope_error'] = { error: e.message, backtrace: e.backtrace.first(5) }
+  end
+  
+  # --- NESTED ATTRIBUTES TESTS ---
+  begin
+    reset_db
+    
+    account1_attrs = { name: 'Nested Create', billing_address_attributes: { street1: '456 Oak Ave', city: 'Oakland' } }
+    account1 = Account.create!(account1_attrs)
+    results['Account_nested_attributes_create'] = { account_name: account1.name, address_city: account1.billing_address&.city }
+
+    account2_attrs = { name: 'Nested Reject', billing_address_attributes: { street1: '', city: '' } }
+    account2 = Account.create!(account2_attrs)
+    results['Account_nested_attributes_reject'] = { account_name: account2.name, address_present: account2.billing_address.present? }
+
+    account3 = Account.create!(name: 'Nested Destroy', billing_address_attributes: { street1: '789 Pine St', city: 'Pineville' })
+    address_id_before = account3.billing_address.id
+    account3.update!(billing_address_attributes: { id: address_id_before, _destroy: '1' })
+    results['Account_nested_attributes_destroy'] = { address_present_after_update: account3.reload.billing_address.present?, address_found_by_id: Address.find_by(id: address_id_before).present? }
+
+  rescue => e
+    results['Account_nested_attributes_error'] = { error: e.message, backtrace: e.backtrace.first(5) }
+  end
+
+  results
+end
+
+
+if __FILE__ == $0
+  setup_database
+  results = run_tests
+  puts JSON.dump(results)
+end

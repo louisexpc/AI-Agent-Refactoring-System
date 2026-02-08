@@ -1,0 +1,11 @@
+[package]
+name = "agent_expat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2.155"
+
+[[bin]]
+name = "agent_expat_cli"
+path = "src/main.rs"

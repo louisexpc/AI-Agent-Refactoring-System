@@ -1,0 +1,121 @@
+#!/usr/bin/env ruby
+
+require 'json'
+require 'bundler/inline'
+
+gemfile(true) do
+  source 'https://rubygems.org'
+  gem 'activerecord', '~> 7.1'
+  gem 'sqlite3', '~> 1.6'
+end
+
+require 'active_record'
+
+# This is the file we are characterizing.
+SCHEMA_FILE_PATH = '/workspace/init/3f34e3b507874b168e5505f4c160a301/snapshot/repo/db/schema.rb'
+
+results = {}
+
+# Suppress STDOUT from schema loading, as it can be verbose.
+# We only want our final JSON output.
+original_stdout = $stdout.dup
+$stdout.reopen(IO::NULL)
+
+begin
+  # Establish a connection to a temporary in-memory SQLite database.
+  # This allows us to load the schema without a real database server or file.
+  ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
+  connection = ActiveRecord::Base.connection
+
+  # Loading the schema.rb file will execute its contents, defining the
+  # schema on our in-memory database.
+  if File.exist?(SCHEMA_FILE_PATH)
+    load SCHEMA_FILE_PATH
+  else
+    # Restore stdout to print the error
+    $stdout.reopen(original_stdout)
+    results['Error_File_Not_Found'] = {
+      message: "Schema file not found at #{SCHEMA_FILE_PATH}"
+    }
+    puts JSON.dump(results)
+    exit
+  end
+
+  # Restore stdout so we can print the final JSON.
+  $stdout.reopen(original_stdout)
+
+  # Introspect the schema that was just created.
+  # Get a list of all tables and sort them for deterministic output.
+  tables = connection.tables.sort
+  results['Schema_Tables_List'] = {
+    description: "List of all tables created by the schema definition.",
+    tables: tables,
+    count: tables.count
+  }
+
+  tables.each do |table_name|
+    # For each table, get detailed information about its columns and indexes.
+    key = "Schema_Table_#{table_name}"
+
+    # Get column definitions
+    columns = connection.columns(table_name).map do |col|
+      {
+        name: col.name,
+        type: col.type,
+        sql_type: col.sql_type_metadata.sql_type,
+        limit: col.limit,
+        precision: col.precision,
+        scale: col.scale,
+        default: col.default,
+        nullable: col.null,
+        primary_key: col.primary,
+        default_function: col.default_function
+      }
+    end
+
+    # Get index definitions
+    indexes = connection.indexes(table_name).map do |idx|
+      {
+        name: idx.name,
+        columns: idx.columns,
+        unique: idx.unique,
+        orders: idx.orders
+      }
+    end
+    
+    # Get foreign key definitions
+    foreign_keys = connection.foreign_keys(table_name).map do |fk|
+        {
+            from_table: fk.from_table,
+            to_table: fk.to_table,
+            column: fk.column,
+            primary_key: fk.primary_key,
+            name: fk.name,
+            on_delete: fk.on_delete,
+            on_update: fk.on_update
+        }
+    end
+
+    results[key] = {
+      description: "Structure of the '#{table_name}' table.",
+      columns: columns,
+      indexes: indexes,
+      foreign_keys: foreign_keys
+    }
+  end
+
+rescue => e
+  # Restore stdout in case of an error to report it.
+  $stdout.reopen(original_stdout)
+  results['Error_Schema_Load_Failed'] = {
+    class: e.class.to_s,
+    message: e.message,
+    backtrace: e.backtrace.first(10) # Limit backtrace for brevity
+  }
+ensure
+  # Ensure stdout is always restored.
+  $stdout.reopen(original_stdout) unless $stdout == original_stdout
+end
+
+# The LAST line of output must be the JSON dump.
+puts JSON.dump(results)

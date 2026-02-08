@@ -1,0 +1,410 @@
+# frozen_string_literal: true
+
+require 'json'
+require 'active_record'
+require 'active_support/all'
+require 'date'
+
+# --- Test Setup ---
+
+# Set up an in-memory database
+ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
+ActiveRecord::Base.logger = nil # Suppress schema creation noise
+
+# --- Mocking Dependencies ---
+
+# Mock modules that would be provided by gems
+module UsesUserPermissions
+  def self.included(base)
+    base.extend(ClassMethods)
+  end
+  module ClassMethods
+    def uses_user_permissions
+      has_many :permissions, class_name: "Permission", as: :asset
+    end
+  end
+end
+
+module ActsAsCommentable
+  def self.included(base)
+    base.extend(ClassMethods)
+  end
+  module ClassMethods
+    def acts_as_commentable
+      has_many :comments, as: :commentable
+    end
+  end
+end
+
+module UsesCommentExtensions
+  def self.included(base)
+    base.extend(ClassMethods)
+  end
+  module ClassMethods
+    def uses_comment_extensions; end
+  end
+end
+
+module ActsAsTaggableOn
+  module Taggable
+    def self.included(base)
+      base.extend(ClassMethods)
+    end
+    module ClassMethods
+      def acts_as_taggable_on(*_args)
+        has_many :taggings, as: :taggable
+        has_many :tags, through: :taggings
+      end
+    end
+  end
+end
+
+module PaperTrail
+  def self.included(base)
+    base.extend(ClassMethods)
+  end
+  module ClassMethods
+    def has_paper_trail(options = {})
+      has_many :versions, class_name: options[:versions][:class_name], as: :item
+    end
+  end
+end
+
+module HasFields
+  def self.included(base)
+    base.extend(ClassMethods)
+  end
+  module ClassMethods
+    def has_fields; end
+  end
+end
+
+module Exportable
+  def self.included(base)
+    base.extend(ClassMethods)
+  end
+  module ClassMethods
+    def exportable; end
+  end
+end
+
+module Sortable
+  def self.included(base)
+    base.extend(ClassMethods)
+  end
+  module ClassMethods
+    def sortable(by:, default:)
+      @sort_by_map = by
+      @sort_by_default = default
+    end
+    def sort_by_map
+      @sort_by_map
+    end
+  end
+end
+
+module Ransack
+  module Adapters
+    module ActiveRecord
+      module Base
+        def self.included(base)
+          base.extend(ClassMethods)
+        end
+        module ClassMethods
+          def has_ransackable_associations(*_args); end
+          def ransack_can_autocomplete; end
+          def ransack(params = {})
+             query = params.is_a?(String) ? {params => ''} : params
+             if query['name_cont']
+               where("name LIKE ?", "%#{query['name_cont']}%")
+             else
+               all
+             end
+          end
+        end
+      end
+    end
+  end
+end
+
+# Define mock models for associations and dependencies
+class User < ActiveRecord::Base; end
+class Task < ActiveRecord::Base
+  belongs_to :asset, polymorphic: true, optional: true
+end
+class Lead < ActiveRecord::Base
+  belongs_to :campaign, optional: true
+  def increment_leads_count; self.class.increment_counter(:leads_count, campaign_id); end
+  def decrement_leads_count; self.class.decrement_counter(:leads_count, campaign_id); end
+end
+class Opportunity < ActiveRecord::Base
+  belongs_to :campaign, optional: true
+  def increment_opportunities_count; self.class.increment_counter(:opportunities_count, campaign_id); end
+  def decrement_opportunities_count; self.class.decrement_counter(:opportunities_count, campaign_id); end
+end
+class Email < ActiveRecord::Base
+  belongs_to :mediator, polymorphic: true, optional: true
+end
+class Permission < ActiveRecord::Base
+  belongs_to :user
+  belongs_to :asset, polymorphic: true
+end
+class Comment < ActiveRecord::Base
+  belongs_to :commentable, polymorphic: true
+end
+class Version < ActiveRecord::Base
+  belongs_to :item, polymorphic: true
+end
+class Tag < ActiveRecord::Base; end
+class Tagging < ActiveRecord::Base
+  belongs_to :tag
+  belongs_to :taggable, polymorphic: true
+end
+class Setting
+  def self.unroll(key)
+    case key
+    when :campaign_status
+      [['Active'], ['Completed'], ['Cancelled'], ['Planned']]
+    else
+      []
+    end
+  end
+end
+
+# Include mocked modules into ActiveRecord::Base so the Campaign class can use them
+ActiveRecord::Base.include(UsesUserPermissions)
+ActiveRecord::Base.include(ActsAsCommentable)
+ActiveRecord::Base.include(UsesCommentExtensions)
+ActiveRecord::Base.include(PaperTrail)
+ActiveRecord::Base.include(HasFields)
+ActiveRecord::Base.include(Exportable)
+ActiveRecord::Base.include(Sortable)
+ActiveRecord::Base.include(ActsAsTaggableOn::Taggable)
+ActiveRecord::Base.include(Ransack::Adapters::ActiveRecord::Base)
+
+# Define the schema
+ActiveRecord::Schema.define do
+  create_table :campaigns do |t|
+    t.integer :user_id
+    t.integer :assigned_to
+    t.string :name, limit: 64, default: "", null: false
+    t.string :access, limit: 8, default: "Public"
+    t.string :status, limit: 64
+    t.decimal :budget, precision: 12, scale: 2
+    t.integer :target_leads
+    t.float :target_conversion
+    t.decimal :target_revenue, precision: 12, scale: 2
+    t.integer :leads_count, default: 0
+    t.integer :opportunities_count, default: 0
+    t.decimal :revenue, precision: 12, scale: 2
+    t.date :starts_on
+    t.date :ends_on
+    t.text :objectives
+    t.datetime :deleted_at
+    t.datetime :created_at
+    t.datetime :updated_at
+    t.string :background_info
+    t.text :subscribed_users
+  end
+
+  create_table :users do |t|
+    t.string :name
+  end
+
+  create_table :tasks do |t|
+    t.string :asset_type
+    t.integer :asset_id
+    t.string :name
+  end
+
+  create_table :leads do |t|
+    t.integer :campaign_id
+    t.string :name
+  end
+
+  create_table :opportunities do |t|
+    t.integer :campaign_id
+    t.string :name
+  end
+
+  create_table :emails do |t|
+    t.string :mediator_type
+    t.integer :mediator_id
+  end
+
+  create_table :permissions do |t|
+    t.integer :user_id
+    t.string :asset_type
+    t.integer :asset_id
+  end
+
+  create_table :comments do |t|
+    t.string :commentable_type
+    t.integer :commentable_id
+  end
+
+  create_table :versions do |t|
+    t.string :item_type
+    t.integer :item_id
+  end
+
+  create_table :tags do |t|
+    t.string :name
+  end
+
+  create_table :taggings do |t|
+    t.integer :tag_id
+    t.string :taggable_type
+    t.integer :taggable_id
+    t.string :context, limit: 128
+  end
+end
+
+# --- Load the Class to be Tested ---
+
+# Load the actual class file.
+require_relative '/workspace/init/3f34e3b507874b168e5505f4c160a301/snapshot/repo/app/models/entities/campaign'
+
+
+# --- Test Execution ---
+
+results = {}
+
+# Set up some base data
+user1 = User.create!(id: 1, name: 'User One')
+user2 = User.create!(id: 2, name: 'User Two')
+
+begin
+  # --- Class Method Tests ---
+
+  results['Campaign_per_page_default'] = { value: Campaign.per_page }
+  results['Campaign_sortable_options'] = { value: Campaign.sort_by_map }
+
+  # --- Scope Tests ---
+  Campaign.delete_all
+
+  c1 = Campaign.create!(name: 'Campaign 1', user: user1, status: 'Active', starts_on: Date.parse('2023-01-01'), ends_on: Date.parse('2023-01-31'))
+  c2 = Campaign.create!(name: 'Campaign 2', user: user1, assigned_to: user2.id, status: 'Planned')
+  c3 = Campaign.create!(name: 'Campaign 3', user: user2, status: 'Completed')
+  c4 = Campaign.create!(name: 'Campaign 4', user: user2, status: 'Cancelled')
+  c5 = Campaign.create!(name: 'Campaign 5', user: user1, status: nil) # 'other' status
+
+  results['Campaign_scope_state_single'] = { ids: Campaign.state(['Active']).pluck(:id) }
+  results['Campaign_scope_state_multiple'] = { ids: Campaign.state(%w[Planned Cancelled]).pluck(:id).sort }
+  results['Campaign_scope_state_with_other'] = { ids: Campaign.state(['Active', 'other']).pluck(:id).sort }
+  results['Campaign_scope_created_by'] = { ids: Campaign.created_by(user1).pluck(:id).sort }
+  results['Campaign_scope_assigned_to'] = { ids: Campaign.assigned_to(user2).pluck(:id) }
+  results['Campaign_scope_text_search_full_match'] = { ids: Campaign.text_search('Campaign 1').pluck(:id) }
+  results['Campaign_scope_text_search_partial_match'] = { ids: Campaign.text_search('Campaign').pluck(:id).sort }
+  results['Campaign_scope_text_search_no_match'] = { ids: Campaign.text_search('Nonexistent').pluck(:id) }
+
+  # --- Initialization and Defaults ---
+  campaign_new = Campaign.new
+  results['Campaign_new_attributes'] = {
+    name: campaign_new.name,
+    access: campaign_new.access,
+    subscribed_users: campaign_new.subscribed_users
+  }
+
+  # --- Validation Tests ---
+  
+  # name presence
+  v_no_name = Campaign.new(name: '')
+  v_no_name.valid?
+  results['Campaign_validation_name_presence'] = { valid: v_no_name.valid?, errors: v_no_name.errors.messages }
+
+  # name uniqueness
+  Campaign.create!(name: 'Unique Name', user_id: user1.id)
+  v_not_unique = Campaign.new(name: 'Unique Name', user_id: user1.id)
+  v_not_unique.valid?
+  results['Campaign_validation_name_uniqueness'] = { valid: v_not_unique.valid?, errors: v_not_unique.errors.messages }
+
+  v_unique_diff_user = Campaign.new(name: 'Unique Name', user_id: user2.id)
+  v_unique_diff_user.valid?
+  results['Campaign_validation_name_uniqueness_different_user'] = { valid: v_unique_diff_user.valid?, errors: v_unique_diff_user.errors.messages }
+
+  # dates sequence
+  v_bad_dates = Campaign.new(name: 'Bad Dates', starts_on: Date.today, ends_on: Date.today - 1)
+  v_bad_dates.valid?
+  results['Campaign_validation_dates_sequence_invalid'] = { valid: v_bad_dates.valid?, errors: v_bad_dates.errors.messages }
+
+  v_good_dates = Campaign.new(name: 'Good Dates', starts_on: Date.today, ends_on: Date.today + 1)
+  v_good_dates.valid?
+  results['Campaign_validation_dates_sequence_valid'] = { valid: v_good_dates.valid?, errors: v_good_dates.errors.messages }
+
+  v_equal_dates = Campaign.new(name: 'Equal Dates', starts_on: Date.today, ends_on: Date.today)
+  v_equal_dates.valid?
+  results['Campaign_validation_dates_sequence_equal'] = { valid: v_equal_dates.valid?, errors: v_equal_dates.errors.messages }
+
+  # shared access
+  v_shared_no_users = Campaign.new(name: 'Shared Access', access: 'Shared')
+  v_shared_no_users.valid?
+  results['Campaign_validation_shared_access_no_users'] = { valid: v_shared_no_users.valid?, errors: v_shared_no_users.errors.messages }
+
+  v_shared_with_users = Campaign.new(name: 'Shared Access OK', access: 'Shared')
+  v_shared_with_users.permissions.build(user: user1)
+  v_shared_with_users.valid?
+  results['Campaign_validation_shared_access_with_users'] = { valid: v_shared_with_users.valid?, errors: v_shared_with_users.errors.messages }
+
+  # status inclusion
+  v_status_invalid = Campaign.new(name: 'Invalid Status', status: 'Nonexistent Status')
+  v_status_invalid.valid?
+  results['Campaign_validation_status_inclusion_invalid'] = { valid: v_status_invalid.valid?, errors: v_status_invalid.errors.messages }
+
+  v_status_valid = Campaign.new(name: 'Valid Status', status: 'Active')
+  v_status_valid.valid?
+  results['Campaign_validation_status_inclusion_valid'] = { valid: v_status_valid.valid?, errors: v_status_valid.errors.messages }
+  
+  v_status_blank = Campaign.new(name: 'Blank Status', status: '')
+  v_status_blank.valid?
+  results['Campaign_validation_status_inclusion_blank'] = { valid: v_status_blank.valid?, errors: v_status_blank.errors.messages }
+
+  # --- Instance Method Tests: attach! / discard! ---
+  
+  Campaign.delete_all
+  Task.delete_all
+  Lead.delete_all
+  Opportunity.delete_all
+
+  campaign_for_attach = Campaign.create!(name: 'Attachment Test', leads_count: 0, opportunities_count: 0)
+  
+  # attach! Task
+  task = Task.create!(name: 'My Task')
+  campaign_for_attach.attach!(task)
+  results['Campaign_attach_task'] = { task_asset_id: task.reload.asset_id, task_asset_type: task.asset_type, campaign_tasks_count: campaign_for_attach.tasks.count }
+  
+  # attach! already attached task (should do nothing)
+  campaign_for_attach.attach!(task)
+  results['Campaign_attach_already_attached_task'] = { campaign_tasks_count: campaign_for_attach.tasks.count }
+  
+  # attach! Lead
+  lead = Lead.create!(name: 'My Lead')
+  campaign_for_attach.attach!(lead)
+  results['Campaign_attach_lead'] = { lead_campaign_id: lead.reload.campaign_id, campaign_leads_count: campaign_for_attach.reload.leads_count }
+  
+  # attach! Opportunity
+  opportunity = Opportunity.create!(name: 'My Opp')
+  campaign_for_attach.attach!(opportunity)
+  results['Campaign_attach_opportunity'] = { opportunity_campaign_id: opportunity.reload.campaign_id, campaign_opportunities_count: campaign_for_attach.reload.opportunities_count }
+
+  # discard! Task
+  campaign_for_attach.discard!(task)
+  results['Campaign_discard_task'] = { task_asset_id: task.reload.asset_id, campaign_tasks_count: campaign_for_attach.tasks.count }
+  
+  # discard! Lead
+  campaign_for_attach.discard!(lead)
+  results['Campaign_discard_lead'] = { lead_campaign_id: lead.reload.campaign_id, campaign_leads_count: campaign_for_attach.reload.leads_count }
+
+  # discard! Opportunity
+  campaign_for_attach.discard!(opportunity)
+  results['Campaign_discard_opportunity'] = { opportunity_campaign_id: opportunity.reload.campaign_id, campaign_opportunities_count: campaign_for_attach.reload.opportunities_count }
+
+rescue StandardError => e
+  results['error'] = {
+    class: e.class.name,
+    message: e.message,
+    backtrace: e.backtrace.first(5)
+  }
+end
+
+puts JSON.dump(results)

@@ -1,0 +1,6 @@
+cmd: echo 'no test candidates detected'
+exit_code: 0
+--- stdout ---
+no test candidates detected
+
+--- stderr ---

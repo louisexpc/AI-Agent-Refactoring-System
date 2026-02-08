@@ -1,0 +1,640 @@
+An executable C program that characterizes the `xmlparse` module.
+
+The core challenge is that `xmlparse.c` has numerous dependencies on other modules within the Expat library (like `xmltok.c`, `xmlrole.c`, and encoding converters), which were not provided. To create a self-contained, compilable test program as required, this solution implements a "mocking" strategy.
+
+The test program (`golden.c`) provides minimal, test-aware implementations (mocks) for all the missing functions. The key component is a mock tokenizer that is controlled by the test case, allowing it to feed a specific stream of tokens and data to the `xmlparse.c` logic. This enables precise testing of internal state transitions and handler invocations within `xmlparse.c` in complete isolation.
+
+This characterization test covers:
+1.  **Static Information**: `XML_ExpatVersion`, `XML_ExpatVersionInfo`, `XML_ErrorString`, `XML_GetFeatureList`.
+2.  **Parser Lifecycle**: Creation (`XML_ParserCreate`, `XML_ParserCreateNS`), resetting (`XML_ParserReset`), and destruction (`XML_ParserFree`).
+3.  **Core Parsing Logic**: A basic "happy path" parse of a simple element (`<doc/>`), verifying that the correct start and end element handlers are called.
+4.  **Attribute Handling**: Parsing an element with attributes (`<doc a="1" b="2"/>`) and verifying the attribute data passed to the handler.
+5.  **Error Handling**: Simulating a syntax error from the tokenizer and checking that `xmlparse.c` correctly reports the error code and location.
+6.  **Configuration**: Demonstrates setting a hash salt for deterministic behavior.
+
+The output is a single JSON object, ensuring machine-parseable results for automated verification.
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stddef.h>
+#include <math.h>
+
+/*
+ * ===========================================================================
+ *
+ * MOCKING FRAMEWORK: HEADER DEFINITIONS
+ *
+ * This section provides the necessary header file definitions that xmlparse.c
+ * depends on. These are normally part of the full Expat library source.
+ *
+ * ===========================================================================
+ */
+
+// --- Mocked expat_config.h ---
+#define XML_GE 1
+#define XML_CONTEXT_BYTES 1024
+#define XML_DTD 1
+#define XML_NS 1
+#define HAVE_MEMMOVE 1
+// Define other HAVE_* macros for simplicity to avoid #ifdef branches
+#define HAVE_GETRANDOM 1 
+
+// --- Mocked expat_external.h ---
+#ifdef __cplusplus
+#  define EXPAT_BEGIN_C_DECLS extern "C" {
+#  define EXPAT_END_C_DECLS }
+#else
+#  define EXPAT_BEGIN_C_DECLS
+#  define EXPAT_END_C_DECLS
+#endif
+
+#define XML_CALL
+#define XMLPARSEAPI(type) type
+
+#if defined(XML_UNICODE_WCHAR_T)
+#  include <wchar.h>
+typedef wchar_t XML_Char;
+typedef wchar_t XML_LChar;
+#elif defined(XML_UNICODE)
+typedef unsigned short XML_Char;
+typedef unsigned short XML_LChar;
+#else
+typedef char XML_Char;
+typedef char XML_LChar;
+#endif
+
+
+// --- Provided ascii.h ---
+#include "ascii.h"
+
+// --- Mocked xmltok.h ---
+enum {
+  XML_TOK_NONE = -1,
+  XML_TOK_INVALID = -2,
+  XML_TOK_PARTIAL = -3,
+  XML_TOK_PARTIAL_CHAR = -4,
+  XML_TOK_PROLOG_S = 1,
+  XML_TOK_XML_DECL,
+  XML_TOK_PI,
+  XML_TOK_COMMENT,
+  XML_TOK_BOM,
+  XML_TOK_DOCTYPE,
+  XML_TOK_START_TAG_WITH_ATTS,
+  XML_TOK_START_TAG_NO_ATTS,
+  XML_TOK_EMPTY_ELEMENT_WITH_ATTS,
+  XML_TOK_EMPTY_ELEMENT_NO_ATTS,
+  XML_TOK_END_TAG,
+  XML_TOK_DATA_CHARS,
+  XML_TOK_DATA_NEWLINE,
+  XML_TOK_CDATA_SECT_OPEN,
+  XML_TOK_CDATA_SECT_CLOSE,
+  XML_TOK_CHAR_REF,
+  XML_TOK_ENTITY_REF,
+  XML_TOK_IGNORE_SECT,
+  XML_TOK_PARAM_ENTITY_REF
+};
+enum {
+    XML_ROLE_ERROR = -1,
+    XML_ROLE_NONE = 0,
+    XML_ROLE_XML_DECL,
+    XML_ROLE_INSTANCE_START,
+    XML_ROLE_DOCTYPE_NAME,
+    XML_ROLE_DOCTYPE_SYSTEM_ID,
+    XML_ROLE_DOCTYPE_PUBLIC_ID,
+    XML_ROLE_DOCTYPE_INTERNAL_SUBSET,
+    XML_ROLE_DOCTYPE_CLOSE,
+    XML_ROLE_GENERAL_ENTITY_NAME,
+    XML_ROLE_PARAM_ENTITY_NAME,
+    XML_ROLE_ENTITY_VALUE,
+    XML_ROLE_ENTITY_SYSTEM_ID,
+    XML_ROLE_ENTITY_PUBLIC_ID,
+    XML_ROLE_ENTITY_COMPLETE,
+    XML_ROLE_ENTITY_NOTATION_NAME,
+    XML_ROLE_ELEMENT_NAME,
+    XML_ROLE_ATTRIBUTE_NAME,
+    XML_ROLE_ATTRIBUTE_TYPE_CDATA,
+    XML_ROLE_ATTRIBUTE_TYPE_ID,
+    XML_ROLE_ATTRIBUTE_TYPE_IDREF,
+    XML_ROLE_ATTRIBUTE_TYPE_IDREFS,
+    XML_ROLE_ATTRIBUTE_TYPE_ENTITY,
+    XML_ROLE_ATTRIBUTE_TYPE_ENTITIES,
+    XML_ROLE_ATTRIBUTE_TYPE_NMTOKEN,
+    XML_ROLE_ATTRIBUTE_TYPE_NMTOKENS,
+    XML_ROLE_ATTRIBUTE_ENUM_VALUE,
+    XML_ROLE_ATTRIBUTE_NOTATION_VALUE,
+    XML_ROLE_ATTLIST_ELEMENT_NAME,
+    XML_ROLE_DEFAULT_ATTRIBUTE_VALUE,
+    XML_ROLE_IMPLIED_ATTRIBUTE_VALUE,
+    XML_ROLE_REQUIRED_ATTRIBUTE_VALUE,
+    XML_ROLE_FIXED_ATTRIBUTE_VALUE,
+    XML_ROLE_CONTENT_PCDATA,
+    XML_ROLE_CONTENT_EMPTY,
+    XML_ROLE_CONTENT_ANY,
+    XML_ROLE_CONTENT_ELEMENT,
+    XML_ROLE_CONTENT_ELEMENT_OPT,
+    XML_ROLE_CONTENT_ELEMENT_REP,
+    XML_ROLE_CONTENT_ELEMENT_PLUS,
+    XML_ROLE_NOTATION_NAME,
+    XML_ROLE_NOTATION_SYSTEM_ID,
+    XML_ROLE_NOTATION_PUBLIC_ID,
+    XML_ROLE_NOTATION_NO_SYSTEM_ID,
+    XML_ROLE_PI,
+    XML_ROLE_COMMENT,
+    XML_ROLE_TEXT_DECL,
+    XML_ROLE_IGNORE_SECT,
+    XML_ROLE_INNER_PARAM_ENTITY_REF,
+    XML_ROLE_GROUP_OPEN,
+    XML_ROLE_GROUP_CLOSE,
+    XML_ROLE_GROUP_CLOSE_OPT,
+    XML_ROLE_GROUP_CLOSE_REP,
+    XML_ROLE_GROUP_CLOSE_PLUS,
+    XML_ROLE_GROUP_CHOICE,
+    XML_ROLE_GROUP_SEQUENCE,
+    XML_ROLE_ATTLIST_NONE,
+    XML_ROLE_ATTLIST_NO_ATTS,
+    XML_ROLE_ATTLIST_VALUE,
+    XML_ROLE_ATTRIBUTE_NONE,
+    XML_ROLE_ATTRIBUTE_NO_VALUE,
+    XML_ROLE_ATTRIBUTE_VALUE_NOT_STARTED,
+    XML_ROLE_ATTRIBUTE_VALUE_STARTED,
+    XML_ROLE_DOCTYPE_NONE,
+    XML_ROLE_DOCTYPE_NO_SYSID,
+    XML_ROLE_DOCTYPE_NO_PUBID,
+    XML_ROLE_ELEMENT_NONE,
+    XML_ROLE_ELEMENT_NO_CONTENT,
+    XML_ROLE_ENTITY_NONE,
+    XML_ROLE_ENTITY_NO_VALUE,
+    XML_ROLE_ENTITY_NO_SYSID,
+    XML_ROLE_NOTATION_NONE,
+    XML_ROLE_NOTATION_NO_ID
+};
+
+typedef struct {
+  int minBytesPerChar;
+  int isUtf8;
+  int isUtf16;
+} ENCODING;
+typedef struct { int dummy; } INIT_ENCODING;
+typedef struct {
+  const char *name;
+  const char *valuePtr;
+  const char *valueEnd;
+  char normalized;
+} ATTRIBUTE;
+typedef struct {
+  long lineNumber;
+  long columnNumber;
+} POSITION;
+typedef struct {
+  unsigned char documentEntity;
+  unsigned char inEntityValue;
+  unsigned char level;
+  unsigned char role;
+} PROLOG_STATE;
+
+#define XmlUtf8Convert(enc, from, from_end, to, to_end) \
+    (*(to) = *(from), (*from)++, (*to)++, 0)
+#define XmlUtf16Convert(enc, from, from_end, to, to_end) \
+    (*(to) = *(from), (*from)++, (*to)++, 0)
+#define XmlEncode(n, p) (*(p) = (char)n, 1)
+
+// --- Full expat.h for function signatures ---
+#include "expat.h"
+
+// --- Provided internal files ---
+// We need these included to get the internal struct definitions
+// for our mocks and test harness.
+#include "siphash.h"
+#include "internal.h"
+
+/*
+ * ===========================================================================
+ *
+ * MOCKING FRAMEWORK: MOCK IMPLEMENTATIONS
+ *
+ * This section provides mock implementations for functions that xmlparse.c
+ * depends on, but whose source was not provided. The mocks are controlled
+ * by global state variables that are set by each test case.
+ *
+ * ===========================================================================
+ */
+
+// --- Mock tokenizer state ---
+typedef struct {
+    int token;
+    const char* text;
+    const char* name;
+    int name_len;
+    int atts_count;
+    ATTRIBUTE atts[4];
+} MockToken;
+
+static MockToken* g_mock_token_stream = NULL;
+static int g_mock_token_idx = 0;
+static int g_mock_token_count = 0;
+
+void set_mock_token_stream(MockToken* stream, int count) {
+    g_mock_token_stream = stream;
+    g_mock_token_idx = 0;
+    g_mock_token_count = count;
+}
+
+
+// --- Mock encoding converter/tokenizer implementations ---
+
+static const ENCODING mock_utf8_encoding = {1, 1, 0};
+static const ENCODING mock_internal_encoding = {1, 1, 0};
+
+int XmlInitEncoding(INIT_ENCODING *p, const ENCODING **enc_ptr, const char *name) {
+    *enc_ptr = &mock_utf8_encoding;
+    return 1;
+}
+const ENCODING *XmlGetUtf8InternalEncoding(void) { return &mock_internal_encoding; }
+const ENCODING *XmlGetUtf16InternalEncoding(void) { return &mock_internal_encoding; }
+
+int XmlParseXmlDecl(int isGeneralTextEntity, const ENCODING *enc, const char *ptr, const char *end,
+                     const char **badPtr, const char **version, const char **versionend, const char **encodingName,
+                     const ENCODING **encoding, int *standalone) {
+    if (standalone) *standalone = -1;
+    return 1;
+}
+
+int XmlPrologTok(const ENCODING *enc, const char *ptr, const char *end, const char **nextPtr) {
+    if (g_mock_token_idx >= g_mock_token_count) {
+        *nextPtr = end;
+        return XML_TOK_NONE;
+    }
+    MockToken* token = &g_mock_token_stream[g_mock_token_idx++];
+    *nextPtr = ptr + strlen(token->text);
+    return token->token;
+}
+
+int XmlContentTok(const ENCODING *enc, const char *ptr, const char *end, const char **nextPtr) {
+    return XmlPrologTok(enc, ptr, end, nextPtr);
+}
+
+int XmlNameLength(const ENCODING *enc, const char *ptr) {
+    if (g_mock_token_idx > 0) {
+        return g_mock_token_stream[g_mock_token_idx - 1].name_len;
+    }
+    return 0;
+}
+
+int XmlGetAttributes(const ENCODING *enc, const char *ptr, int attsMax, ATTRIBUTE *atts) {
+    if (g_mock_token_idx > 0) {
+        MockToken* token = &g_mock_token_stream[g_mock_token_idx - 1];
+        if (token->atts_count > 0 && attsMax >= token->atts_count) {
+            memcpy(atts, token->atts, token->atts_count * sizeof(ATTRIBUTE));
+            return token->atts_count;
+        }
+    }
+    return 0;
+}
+
+int XmlAttributeValueTok(const ENCODING *enc, const char *ptr, const char *end, const char **nextPtr) {
+    if (ptr == end) {
+        *nextPtr = ptr;
+        return XML_TOK_NONE;
+    }
+    *nextPtr = end;
+    return XML_TOK_DATA_CHARS;
+}
+
+int XmlCdataSectionTok(const ENCODING *enc, const char *ptr, const char *end, const char **nextPtr) {
+    return XML_TOK_NONE;
+}
+
+int XmlIgnoreSectionTok(const ENCODING *enc, const char *ptr, const char *end, const char **nextPtr) {
+    return XML_TOK_NONE;
+}
+
+int XmlCharRefNumber(const ENCODING *enc, const char *ptr) { return -1; }
+int XmlIsPublicId(const ENCODING *enc, const char *ptr, const char *end, const char **badPtr) { return 1; }
+const char *XmlSkipS(const ENCODING *enc, const char *ptr) { return ptr; }
+int XmlPredefinedEntityName(const ENCODING *enc, const char *ptr, const char *end) { return 0; }
+int XmlEntityValueTok(const ENCODING *enc, const char *ptr, const char *end, const char **nextPtr) { *nextPtr = end; return XML_TOK_NONE; }
+void XmlPrologStateInit(PROLOG_STATE *state) { memset(state, 0, sizeof(PROLOG_STATE)); }
+void XmlPrologStateInitExternalEntity(PROLOG_STATE *state) { memset(state, 0, sizeof(PROLOG_STATE)); }
+int XmlTokenRole(PROLOG_STATE *state, int tok, const char *ptr, const char *end, const ENCODING *enc) {
+    switch(tok) {
+        case XML_TOK_START_TAG_NO_ATTS:
+        case XML_TOK_START_TAG_WITH_ATTS:
+        case XML_TOK_EMPTY_ELEMENT_NO_ATTS:
+        case XML_TOK_EMPTY_ELEMENT_WITH_ATTS:
+             return XML_ROLE_INSTANCE_START;
+        case XML_TOK_INVALID:
+             return XML_ROLE_ERROR;
+        default: return XML_ROLE_NONE;
+    }
+}
+void XmlUpdatePosition(const ENCODING *enc, const char *ptr, const char *end, POSITION *pos) {}
+void *XmlInitUnknownEncoding(void *mem, int *table, int (*convert)(void *data, const char *p), void *data) { return NULL; }
+int XmlSizeOfUnknownEncoding(void) { return 0; }
+
+// For NS builds
+const ENCODING *XmlGetUtf8InternalEncodingNS(void) { return &mock_internal_encoding; }
+const ENCODING *XmlGetUtf16InternalEncodingNS(void) { return &mock_internal_encoding; }
+int XmlInitEncodingNS(INIT_ENCODING *p, const ENCODING **enc_ptr, const char *name) { return XmlInitEncoding(p, enc_ptr, name); }
+int XmlParseXmlDeclNS(int isGeneralTextEntity, const ENCODING *enc, const char *ptr, const char *end, const char **badPtr, const char **version, const char **versionend, const char **encodingName, const ENCODING **encoding, int *standalone) {
+    return XmlParseXmlDecl(isGeneralTextEntity, enc, ptr, end, badPtr, version, versionend, encodingName, encoding, standalone);
+}
+void *XmlInitUnknownEncodingNS(void *mem, int *table, int (*convert)(void *data, const char *p), void *data) { return NULL; }
+
+/*
+ * ===========================================================================
+ *
+ * TEST HARNESS
+ *
+ * ===========================================================================
+ */
+
+// --- JSON output helpers ---
+static int first_output = 1;
+
+void print_json_key(const char* key) {
+    if (!first_output) {
+        printf(", ");
+    }
+    printf("\"%s\": ", key);
+    first_output = 0;
+}
+
+void print_json_string(const char* s) {
+    if (!s) {
+        printf("null");
+        return;
+    }
+    printf("\"");
+    for (; *s; ++s) {
+        switch (*s) {
+            case '\"': printf("\\\""); break;
+            case '\\': printf("\\\\"); break;
+            case '\b': printf("\\b"); break;
+            case '\f': printf("\\f"); break;
+            case '\n': printf("\\n"); break;
+            case '\r': printf("\\r"); break;
+            case '\t': printf("\\t"); break;
+            default:
+                if (*s >= 0 && *s < 32) {
+                    printf("\\u%04x", (unsigned char)*s);
+                } else {
+                    putchar(*s);
+                }
+                break;
+        }
+    }
+    printf("\"");
+}
+
+// --- Handler logging ---
+static int in_handler = 0;
+#define MAX_EVENTS 50
+static char g_event_log[MAX_EVENTS][256];
+static int g_event_count = 0;
+
+void reset_event_log() {
+    g_event_count = 0;
+    for(int i = 0; i < MAX_EVENTS; ++i) g_event_log[i][0] = '\0';
+}
+
+void add_log(const char* log) {
+    if (g_event_count < MAX_EVENTS) {
+        strncpy(g_event_log[g_event_count++], log, 255);
+    }
+}
+
+void print_event_log() {
+    printf("[");
+    for (int i = 0; i < g_event_count; ++i) {
+        printf("%s%s", g_event_log[i], (i == g_event_count - 1) ? "" : ", ");
+    }
+    printf("]");
+}
+
+// --- Mock Handlers ---
+void start_element_handler(void *userData, const XML_Char *name, const XML_Char **atts) {
+    char buf[256] = "{ \"handler\": \"start_element\", \"name\": \"";
+    strcat(buf, name);
+    strcat(buf, "\", \"atts\": {");
+    if (atts) {
+        int first = 1;
+        for (int i = 0; atts[i]; i += 2) {
+            if (!first) strcat(buf, ", ");
+            strcat(buf, "\"");
+            strcat(buf, atts[i]);
+            strcat(buf, "\": \"");
+            strcat(buf, atts[i+1]);
+            strcat(buf, "\"");
+            first = 0;
+        }
+    }
+    strcat(buf, "} }");
+    add_log(buf);
+}
+
+void end_element_handler(void *userData, const XML_Char *name) {
+    char buf[256] = "{ \"handler\": \"end_element\", \"name\": \"";
+    strcat(buf, name);
+    strcat(buf, "\" }");
+    add_log(buf);
+}
+
+
+// --- Test Cases ---
+
+void test_static_info() {
+    printf("{\n");
+    first_output = 1;
+
+    print_json_key("XML_ExpatVersion");
+    print_json_string(XML_ExpatVersion());
+
+    print_json_key("XML_ExpatVersionInfo");
+    XML_Expat_Version v = XML_ExpatVersionInfo();
+    printf("{\"major\": %d, \"minor\": %d, \"micro\": %d}", v.major, v.minor, v.micro);
+
+    print_json_key("XML_GetFeatureList");
+    printf("[");
+    const XML_Feature* features = XML_GetFeatureList();
+    for (int i = 0; features[i].feature != XML_FEATURE_END; ++i) {
+        printf("%s{\"feature\": %d, \"name\": \"%s\", \"value\": %ld}",
+               (i > 0 ? ", " : ""),
+               features[i].feature,
+               features[i].name,
+               features[i].value);
+    }
+    printf("]");
+
+    print_json_key("XML_ErrorString");
+    printf("{");
+    int first_err = 1;
+    // Iterate through a known range of error codes
+    for (int i = 0; i < 40; ++i) {
+       const char* err_str = XML_ErrorString(i);
+       if (err_str) {
+           if (!first_err) printf(", ");
+           printf("\"%d\": \"%s\"", i, err_str);
+           first_err = 0;
+       }
+    }
+    printf("}");
+
+    printf("\n}");
+}
+
+void test_parser_lifecycle() {
+    printf("{\n");
+    first_output = 1;
+
+    // Create
+    print_json_key("XML_ParserCreate_utf8");
+    XML_Parser p1 = XML_ParserCreate("UTF-8");
+    printf("%s", p1 ? "\"non-null\"" : "null");
+    
+    // Set hash salt
+    print_json_key("XML_SetHashSalt");
+    int salt_ok = XML_SetHashSalt(p1, 12345);
+    printf("%s", salt_ok ? "true" : "false");
+
+    // Reset
+    print_json_key("XML_ParserReset");
+    XML_Bool reset_ok = XML_ParserReset(p1, "UTF-8");
+    printf("%s", reset_ok ? "true" : "false");
+
+    // CreateNS
+    print_json_key("XML_ParserCreateNS");
+    XML_Parser p2 = XML_ParserCreateNS("UTF-8", ':');
+    printf("%s", p2 ? "\"non-null\"" : "null");
+    XML_SetHashSalt(p2, 12345);
+
+    // Free
+    print_json_key("XML_ParserFree");
+    XML_ParserFree(p1);
+    XML_ParserFree(p2);
+    printf("\"done\"");
+
+    printf("\n}");
+}
+
+void test_parse_simple() {
+    reset_event_log();
+    XML_Parser p = XML_ParserCreate(NULL);
+    XML_SetHashSalt(p, 12345);
+    XML_SetElementHandler(p, start_element_handler, end_element_handler);
+    
+    MockToken stream[] = {
+        {XML_TOK_START_TAG_NO_ATTS, "<doc>", "doc", 3, 0},
+        {XML_TOK_END_TAG, "</doc>", "doc", 3, 0}
+    };
+    set_mock_token_stream(stream, 2);
+
+    const char* xml = "<doc></doc>";
+    enum XML_Status status = XML_Parse(p, xml, strlen(xml), 1);
+    
+    printf("{\n");
+    first_output = 1;
+    print_json_key("status");
+    printf("%d", status);
+    print_json_key("errorCode");
+    printf("%d", XML_GetErrorCode(p));
+    print_json_key("events");
+    print_event_log();
+    printf("\n}");
+
+    XML_ParserFree(p);
+}
+
+
+void test_parse_with_attributes() {
+    reset_event_log();
+    XML_Parser p = XML_ParserCreate(NULL);
+    XML_SetHashSalt(p, 12345);
+    XML_SetElementHandler(p, start_element_handler, end_element_handler);
+
+    ATTRIBUTE atts[] = {
+        {"a", "1", "1"+1, 1},
+        {"b", "2", "2"+1, 1}
+    };
+    MockToken stream[] = {
+        {XML_TOK_EMPTY_ELEMENT_WITH_ATTS, "<doc a='1' b='2'/>", "doc", 3, 2, {atts[0], atts[1]}}
+    };
+    set_mock_token_stream(stream, 1);
+    
+    const char* xml = "<doc a='1' b='2'/>";
+    enum XML_Status status = XML_Parse(p, xml, strlen(xml), 1);
+    
+    printf("{\n");
+    first_output = 1;
+    print_json_key("status");
+    printf("%d", status);
+    print_json_key("errorCode");
+    printf("%d", XML_GetErrorCode(p));
+    print_json_key("events");
+    print_event_log();
+    printf("\n}");
+
+    XML_ParserFree(p);
+}
+
+void test_parse_error() {
+    reset_event_log();
+    XML_Parser p = XML_ParserCreate(NULL);
+    XML_SetHashSalt(p, 12345);
+    XML_SetElementHandler(p, start_element_handler, end_element_handler);
+    
+    MockToken stream[] = {
+        {XML_TOK_START_TAG_NO_ATTS, "<doc>", "doc", 3, 0},
+        {XML_TOK_INVALID, "?", "", 0, 0}
+    };
+    set_mock_token_stream(stream, 2);
+
+    const char* xml = "<doc>?";
+    enum XML_Status status = XML_Parse(p, xml, strlen(xml), 1);
+    
+    printf("{\n");
+    first_output = 1;
+    print_json_key("status");
+    printf("%d", status);
+    print_json_key("errorCode");
+    printf("%d", XML_GetErrorCode(p));
+    print_json_key("errorString");
+    print_json_string(XML_ErrorString(XML_GetErrorCode(p)));
+    print_json_key("currentLine");
+    printf("%lu", (unsigned long)XML_GetCurrentLineNumber(p));
+    print_json_key("currentColumn");
+    printf("%lu", (unsigned long)XML_GetCurrentColumnNumber(p));
+    print_json_key("events");
+    print_event_log();
+    printf("\n}");
+
+    XML_ParserFree(p);
+}
+
+int main() {
+    printf("{\n");
+
+    printf("\"StaticInfo\": ");
+    test_static_info();
+    printf(",\n");
+
+    printf("\"ParserLifecycle\": ");
+    test_parser_lifecycle();
+    printf(",\n");
+
+    printf("\"Parse_simple_doc\": ");
+    test_parse_simple();
+    printf(",\n");
+
+    printf("\"Parse_with_attributes\": ");
+    test_parse_with_attributes();
+    printf(",\n");
+
+    printf("\"Parse_error\": ");
+    test_parse_error();
+
+    printf("\n}\n");
+
+    return 0;
+}

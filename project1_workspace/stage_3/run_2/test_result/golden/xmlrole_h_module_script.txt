@@ -1,0 +1,409 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stddef.h>
+
+/*
+==============================================================================
+== STUBS AND DEFINITIONS FOR COMPILATION
+== This section provides minimal definitions for types and functions that
+== xmlrole.c depends on but are not part of the xmlrole module itself.
+==============================================================================
+*/
+
+/* --- From expat_config.h --- */
+/* (Assuming a default config) */
+
+/* --- From internal.h and expat.h --- */
+#define PTRCALL
+#define FASTCALL
+#define PTRFASTCALL
+#define UNUSED_P(p) (void)p
+
+#ifndef __cplusplus
+#  ifndef inline
+#    define inline
+#  endif
+#endif
+
+typedef unsigned long XML_Size;
+typedef void *XML_Parser;
+typedef int XML_Bool;
+#define XML_TRUE 1
+#define XML_FALSE 0
+
+#ifndef __cplusplus
+/* XML_Char is defined as char for this test harness */
+typedef char XML_Char;
+#endif
+
+/* --- From ascii.h --- */
+#define ASCII_A 0x41
+#define ASCII_C 0x43
+#define ASCII_D 0x44
+#define ASCII_E 0x45
+#define ASCII_F 0x46
+#define ASCII_G 0x47
+#define ASCII_I 0x49
+#define ASCII_L 0x4C
+#define ASCII_M 0x4D
+#define ASCII_N 0x4E
+#define ASCII_O 0x4F
+#define ASCII_P 0x50
+#define ASCII_Q 0x51
+#define ASCII_R 0x52
+#define ASCII_S 0x53
+#define ASCII_T 0x54
+#define ASCII_U 0x55
+#define ASCII_X 0x58
+#define ASCII_Y 0x59
+
+/* --- From xmltok.h --- */
+#define XML_TOK_NONE -4
+#define XML_TOK_PROLOG_S 15
+#define XML_TOK_XML_DECL 12
+#define XML_TOK_PI 11
+#define XML_TOK_COMMENT 13
+#define XML_TOK_BOM 14
+#define XML_TOK_DECL_OPEN 16
+#define XML_TOK_INSTANCE_START 29
+#define XML_TOK_NAME 18
+#define XML_TOK_PREFIXED_NAME 41
+#define XML_TOK_OPEN_BRACKET 25
+#define XML_TOK_DECL_CLOSE 17
+#define XML_TOK_LITERAL 27
+#define XML_TOK_CLOSE_BRACKET 26
+#define XML_TOK_PARAM_ENTITY_REF 28
+#define XML_TOK_PERCENT 22
+#define XML_TOK_POUND_NAME 20
+#define XML_TOK_OPEN_PAREN 23
+#define XML_TOK_NMTOKEN 19
+#define XML_TOK_CLOSE_PAREN 24
+#define XML_TOK_OR 21
+#define XML_TOK_NAME_QUESTION 30
+#define XML_TOK_NAME_ASTERISK 31
+#define XML_TOK_NAME_PLUS 32
+#define XML_TOK_CLOSE_PAREN_QUESTION 35
+#define XML_TOK_CLOSE_PAREN_ASTERISK 36
+#define XML_TOK_CLOSE_PAREN_PLUS 37
+#define XML_TOK_COMMA 38
+#define XML_TOK_COND_SECT_OPEN 33
+#define XML_TOK_COND_SECT_CLOSE 34
+#define XML_TOK_IGNORE_SECT 42
+
+#define MIN_BYTES_PER_CHAR(enc) ((enc)->minBytesPerChar)
+
+struct encoding;
+typedef struct encoding ENCODING;
+
+/* This function is expected by xmlrole.c but is implemented elsewhere (e.g., xmltok.c).
+   We provide a faithful stub implementation for testing purposes. */
+int XmlNameMatchesAscii(const ENCODING *enc, const char *ptr, const char *end, const char *s) {
+    size_t len = end - ptr;
+    (void)enc;
+    if (len != strlen(s))
+        return 0;
+    return memcmp(ptr, s, len) == 0;
+}
+
+/*
+==============================================================================
+== SOURCE FILE INCLUSION
+== The C source file is included here to give the test harness access to
+== static functions (the state handlers), which is crucial for verifying
+== state transitions.
+==============================================================================
+*/
+
+#include "xmlrole.c"
+
+/*
+==============================================================================
+== TEST HARNESS
+==============================================================================
+*/
+
+/* --- Test Helper Functions --- */
+
+/* Helper to convert a role enum to a descriptive string */
+const char *get_role_name(int role) {
+    switch (role) {
+    case XML_ROLE_ERROR: return "XML_ROLE_ERROR";
+    case XML_ROLE_NONE: return "XML_ROLE_NONE";
+    case XML_ROLE_XML_DECL: return "XML_ROLE_XML_DECL";
+    case XML_ROLE_INSTANCE_START: return "XML_ROLE_INSTANCE_START";
+    case XML_ROLE_DOCTYPE_NONE: return "XML_ROLE_DOCTYPE_NONE";
+    case XML_ROLE_DOCTYPE_NAME: return "XML_ROLE_DOCTYPE_NAME";
+    case XML_ROLE_DOCTYPE_SYSTEM_ID: return "XML_ROLE_DOCTYPE_SYSTEM_ID";
+    case XML_ROLE_DOCTYPE_PUBLIC_ID: return "XML_ROLE_DOCTYPE_PUBLIC_ID";
+    case XML_ROLE_DOCTYPE_INTERNAL_SUBSET: return "XML_ROLE_DOCTYPE_INTERNAL_SUBSET";
+    case XML_ROLE_DOCTYPE_CLOSE: return "XML_ROLE_DOCTYPE_CLOSE";
+    case XML_ROLE_GENERAL_ENTITY_NAME: return "XML_ROLE_GENERAL_ENTITY_NAME";
+    case XML_ROLE_PARAM_ENTITY_NAME: return "XML_ROLE_PARAM_ENTITY_NAME";
+    case XML_ROLE_ENTITY_NONE: return "XML_ROLE_ENTITY_NONE";
+    case XML_ROLE_ENTITY_VALUE: return "XML_ROLE_ENTITY_VALUE";
+    case XML_ROLE_ENTITY_SYSTEM_ID: return "XML_ROLE_ENTITY_SYSTEM_ID";
+    case XML_ROLE_ENTITY_PUBLIC_ID: return "XML_ROLE_ENTITY_PUBLIC_ID";
+    case XML_ROLE_ENTITY_COMPLETE: return "XML_ROLE_ENTITY_COMPLETE";
+    case XML_ROLE_ENTITY_NOTATION_NAME: return "XML_ROLE_ENTITY_NOTATION_NAME";
+    case XML_ROLE_NOTATION_NONE: return "XML_ROLE_NOTATION_NONE";
+    case XML_ROLE_NOTATION_NAME: return "XML_ROLE_NOTATION_NAME";
+    case XML_ROLE_NOTATION_SYSTEM_ID: return "XML_ROLE_NOTATION_SYSTEM_ID";
+    case XML_ROLE_NOTATION_NO_SYSTEM_ID: return "XML_ROLE_NOTATION_NO_SYSTEM_ID";
+    case XML_ROLE_NOTATION_PUBLIC_ID: return "XML_ROLE_NOTATION_PUBLIC_ID";
+    case XML_ROLE_ATTRIBUTE_NAME: return "XML_ROLE_ATTRIBUTE_NAME";
+    case XML_ROLE_ATTRIBUTE_TYPE_CDATA: return "XML_ROLE_ATTRIBUTE_TYPE_CDATA";
+    case XML_ROLE_ATTRIBUTE_TYPE_ID: return "XML_ROLE_ATTRIBUTE_TYPE_ID";
+    case XML_ROLE_ATTRIBUTE_TYPE_IDREF: return "XML_ROLE_ATTRIBUTE_TYPE_IDREF";
+    case XML_ROLE_ATTRIBUTE_TYPE_IDREFS: return "XML_ROLE_ATTRIBUTE_TYPE_IDREFS";
+    case XML_ROLE_ATTRIBUTE_TYPE_ENTITY: return "XML_ROLE_ATTRIBUTE_TYPE_ENTITY";
+    case XML_ROLE_ATTRIBUTE_TYPE_ENTITIES: return "XML_ROLE_ATTRIBUTE_TYPE_ENTITIES";
+    case XML_ROLE_ATTRIBUTE_TYPE_NMTOKEN: return "XML_ROLE_ATTRIBUTE_TYPE_NMTOKEN";
+    case XML_ROLE_ATTRIBUTE_TYPE_NMTOKENS: return "XML_ROLE_ATTRIBUTE_TYPE_NMTOKENS";
+    case XML_ROLE_ATTRIBUTE_ENUM_VALUE: return "XML_ROLE_ATTRIBUTE_ENUM_VALUE";
+    case XML_ROLE_ATTRIBUTE_NOTATION_VALUE: return "XML_ROLE_ATTRIBUTE_NOTATION_VALUE";
+    case XML_ROLE_ATTLIST_NONE: return "XML_ROLE_ATTLIST_NONE";
+    case XML_ROLE_ATTLIST_ELEMENT_NAME: return "XML_ROLE_ATTLIST_ELEMENT_NAME";
+    case XML_ROLE_IMPLIED_ATTRIBUTE_VALUE: return "XML_ROLE_IMPLIED_ATTRIBUTE_VALUE";
+    case XML_ROLE_REQUIRED_ATTRIBUTE_VALUE: return "XML_ROLE_REQUIRED_ATTRIBUTE_VALUE";
+    case XML_ROLE_DEFAULT_ATTRIBUTE_VALUE: return "XML_ROLE_DEFAULT_ATTRIBUTE_VALUE";
+    case XML_ROLE_FIXED_ATTRIBUTE_VALUE: return "XML_ROLE_FIXED_ATTRIBUTE_VALUE";
+    case XML_ROLE_ELEMENT_NONE: return "XML_ROLE_ELEMENT_NONE";
+    case XML_ROLE_ELEMENT_NAME: return "XML_ROLE_ELEMENT_NAME";
+    case XML_ROLE_CONTENT_ANY: return "XML_ROLE_CONTENT_ANY";
+    case XML_ROLE_CONTENT_EMPTY: return "XML_ROLE_CONTENT_EMPTY";
+    case XML_ROLE_CONTENT_PCDATA: return "XML_ROLE_CONTENT_PCDATA";
+    case XML_ROLE_GROUP_OPEN: return "XML_ROLE_GROUP_OPEN";
+    case XML_ROLE_GROUP_CLOSE: return "XML_ROLE_GROUP_CLOSE";
+    case XML_ROLE_GROUP_CLOSE_REP: return "XML_ROLE_GROUP_CLOSE_REP";
+    case XML_ROLE_GROUP_CLOSE_OPT: return "XML_ROLE_GROUP_CLOSE_OPT";
+    case XML_ROLE_GROUP_CLOSE_PLUS: return "XML_ROLE_GROUP_CLOSE_PLUS";
+    case XML_ROLE_GROUP_CHOICE: return "XML_ROLE_GROUP_CHOICE";
+    case XML_ROLE_GROUP_SEQUENCE: return "XML_ROLE_GROUP_SEQUENCE";
+    case XML_ROLE_CONTENT_ELEMENT: return "XML_ROLE_CONTENT_ELEMENT";
+    case XML_ROLE_CONTENT_ELEMENT_REP: return "XML_ROLE_CONTENT_ELEMENT_REP";
+    case XML_ROLE_CONTENT_ELEMENT_OPT: return "XML_ROLE_CONTENT_ELEMENT_OPT";
+    case XML_ROLE_CONTENT_ELEMENT_PLUS: return "XML_ROLE_CONTENT_ELEMENT_PLUS";
+    case XML_ROLE_PI: return "XML_ROLE_PI";
+    case XML_ROLE_COMMENT: return "XML_ROLE_COMMENT";
+    case XML_ROLE_PARAM_ENTITY_REF: return "XML_ROLE_PARAM_ENTITY_REF";
+#ifdef XML_DTD
+    case XML_ROLE_TEXT_DECL: return "XML_ROLE_TEXT_DECL";
+    case XML_ROLE_IGNORE_SECT: return "XML_ROLE_IGNORE_SECT";
+    case XML_ROLE_INNER_PARAM_ENTITY_REF: return "XML_ROLE_INNER_PARAM_ENTITY_REF";
+#endif
+    default: return "UNKNOWN_ROLE";
+    }
+}
+
+/* Helper to convert a state handler function pointer to a descriptive string */
+const char *get_handler_name(void *ptr) {
+    if (ptr == (void *)prolog0) return "prolog0";
+    if (ptr == (void *)prolog1) return "prolog1";
+    if (ptr == (void *)prolog2) return "prolog2";
+    if (ptr == (void *)doctype0) return "doctype0";
+    if (ptr == (void *)doctype1) return "doctype1";
+    if (ptr == (void *)doctype2) return "doctype2";
+    if (ptr == (void *)doctype3) return "doctype3";
+    if (ptr == (void *)doctype4) return "doctype4";
+    if (ptr == (void *)doctype5) return "doctype5";
+    if (ptr == (void *)internalSubset) return "internalSubset";
+    if (ptr == (void *)entity0) return "entity0";
+    if (ptr == (void *)entity1) return "entity1";
+    if (ptr == (void *)entity2) return "entity2";
+    if (ptr == (void *)entity3) return "entity3";
+    if (ptr == (void *)entity4) return "entity4";
+    if (ptr == (void *)entity5) return "entity5";
+    if (ptr == (void *)entity6) return "entity6";
+    if (ptr == (void *)entity7) return "entity7";
+    if (ptr == (void *)entity8) return "entity8";
+    if (ptr == (void *)entity9) return "entity9";
+    if (ptr == (void *)entity10) return "entity10";
+    if (ptr == (void *)notation0) return "notation0";
+    if (ptr == (void *)notation1) return "notation1";
+    if (ptr == (void *)notation2) return "notation2";
+    if (ptr == (void *)notation3) return "notation3";
+    if (ptr == (void *)notation4) return "notation4";
+    if (ptr == (void *)attlist0) return "attlist0";
+    if (ptr == (void *)attlist1) return "attlist1";
+    if (ptr == (void *)attlist2) return "attlist2";
+    if (ptr == (void *)attlist3) return "attlist3";
+    if (ptr == (void *)attlist4) return "attlist4";
+    if (ptr == (void *)attlist5) return "attlist5";
+    if (ptr == (void *)attlist6) return "attlist6";
+    if (ptr == (void *)attlist7) return "attlist7";
+    if (ptr == (void *)attlist8) return "attlist8";
+    if (ptr == (void *)attlist9) return "attlist9";
+    if (ptr == (void *)element0) return "element0";
+    if (ptr == (void *)element1) return "element1";
+    if (ptr == (void *)element2) return "element2";
+    if (ptr == (void *)element3) return "element3";
+    if (ptr == (void *)element4) return "element4";
+    if (ptr == (void *)element5) return "element5";
+    if (ptr == (void *)element6) return "element6";
+    if (ptr == (void *)element7) return "element7";
+    if (ptr == (void *)declClose) return "declClose";
+    if (ptr == (void *)error) return "error";
+#ifdef XML_DTD
+    if (ptr == (void *)externalSubset0) return "externalSubset0";
+    if (ptr == (void *)externalSubset1) return "externalSubset1";
+    if (ptr == (void *)condSect0) return "condSect0";
+    if (ptr == (void *)condSect1) return "condSect1";
+    if (ptr == (void *)condSect2) return "condSect2";
+#endif
+    return "unknown_handler";
+}
+
+void test_prolog_state_init() {
+    PROLOG_STATE state;
+    XmlPrologStateInit(&state);
+    printf("  \"XmlPrologStateInit_initial_state\": {\n");
+    printf("    \"handler\": \"%s\"", get_handler_name(state.handler));
+#ifdef XML_DTD
+    printf(",\n");
+    printf("    \"documentEntity\": %d,\n", state.documentEntity);
+    printf("    \"includeLevel\": %u,\n", state.includeLevel);
+    printf("    \"inEntityValue\": %d\n", state.inEntityValue);
+#else
+    printf("\n");
+#endif
+    printf("  }");
+}
+
+#ifdef XML_DTD
+void test_prolog_state_init_external_entity() {
+    PROLOG_STATE state;
+    XmlPrologStateInitExternalEntity(&state);
+    printf("  \"XmlPrologStateInitExternalEntity_initial_state\": {\n");
+    printf("    \"handler\": \"%s\",\n", get_handler_name(state.handler));
+    printf("    \"documentEntity\": %d,\n", state.documentEntity);
+    printf("    \"includeLevel\": %u\n", state.includeLevel);
+    printf("  }");
+}
+#endif
+
+void run_path_test(const char *test_name, int num_steps, const int *tokens, const char **strs) {
+    ENCODING enc;
+    memset(&enc, 0, sizeof(ENCODING));
+    enc.minBytesPerChar = 1;
+
+    PROLOG_STATE state;
+    XmlPrologStateInit(&state);
+
+    printf("  \"%s\": [\n", test_name);
+
+    for (int i = 0; i < num_steps; ++i) {
+        int tok = tokens[i];
+        const char *ptr = strs[i];
+        const char *end = ptr + (ptr ? strlen(ptr) : 0);
+
+        // Adjust ptr for special tokens that have prefixes/suffixes
+        const char *data_ptr = ptr;
+        if (tok == XML_TOK_DECL_OPEN) {
+            data_ptr = ptr + 2; // skip "<!"
+        } else if (tok == XML_TOK_POUND_NAME) {
+            data_ptr = ptr + 1; // skip "#"
+        }
+
+        int role = XmlTokenRole(&state, tok, data_ptr, end, &enc);
+
+        printf("    {\n");
+        printf("      \"step\": %d,\n", i + 1);
+        printf("      \"input_token_str\": \"%s\",\n", ptr ? ptr : "");
+        printf("      \"output_role\": \"%s\",\n", get_role_name(role));
+        printf("      \"next_handler\": \"%s\"\n", get_handler_name(state.handler));
+        printf("    }");
+        if (i < num_steps - 1) {
+            printf(",\n");
+        } else {
+            printf("\n");
+        }
+    }
+    printf("  ]");
+}
+
+/* --- Main Test Execution --- */
+int main(void) {
+    printf("{\n");
+
+    test_prolog_state_init();
+    
+#ifdef XML_DTD
+    printf(",\n");
+    test_prolog_state_init_external_entity();
+#endif
+
+    /* Test Case: Simple DOCTYPE declaration: <!DOCTYPE doc> */
+    const int doctype_simple_tokens[] = {XML_TOK_DECL_OPEN, XML_TOK_PROLOG_S, XML_TOK_NAME, XML_TOK_DECL_CLOSE};
+    const char *doctype_simple_strs[] = {"<!DOCTYPE", " ", "doc", ">"};
+    printf(",\n");
+    run_path_test("XmlTokenRole_path_doctype_simple", 4, doctype_simple_tokens, doctype_simple_strs);
+
+    /* Test Case: DOCTYPE with internal subset: <!DOCTYPE doc [...]> */
+    const int doctype_subset_tokens[] = {XML_TOK_DECL_OPEN, XML_TOK_NAME, XML_TOK_OPEN_BRACKET, XML_TOK_CLOSE_BRACKET, XML_TOK_DECL_CLOSE};
+    const char *doctype_subset_strs[] = {"<!DOCTYPE", "doc", "[", "]", ">"};
+    printf(",\n");
+    run_path_test("XmlTokenRole_path_doctype_subset", 5, doctype_subset_tokens, doctype_subset_strs);
+    
+    /* Test Case: ATTLIST declaration: <!ATTLIST el att CDATA #IMPLIED> */
+    const int attlist_tokens[] = {
+        XML_TOK_DECL_OPEN,             // <!ATTLIST
+        XML_TOK_NAME,                  // el
+        XML_TOK_NAME,                  // att
+        XML_TOK_NAME,                  // CDATA
+        XML_TOK_POUND_NAME,            // #IMPLIED
+        XML_TOK_DECL_CLOSE             // >
+    };
+    const char *attlist_strs[] = {"<!ATTLIST", "el", "att", "CDATA", "#IMPLIED", ">"};
+
+    // Setup: We need to be inside a DTD subset to parse an ATTLIST
+    PROLOG_STATE state_attlist;
+    XmlPrologStateInit(&state_attlist);
+    ENCODING enc_attlist;
+    memset(&enc_attlist, 0, sizeof(ENCODING));
+    enc_attlist.minBytesPerChar = 1;
+    XmlTokenRole(&state_attlist, XML_TOK_DECL_OPEN, "DOCTYPE", "DOCTYPE" + 7, &enc_attlist); // <!DOCTYPE
+    XmlTokenRole(&state_attlist, XML_TOK_NAME, "doc", "doc" + 3, &enc_attlist);              // doc
+    XmlTokenRole(&state_attlist, XML_TOK_OPEN_BRACKET, "[", "[" + 1, &enc_attlist);          // [  -> now in internalSubset state
+
+    printf(",\n");
+    printf("  \"XmlTokenRole_path_attlist_implied\": [\n");
+    for (int i = 0; i < 6; i++) {
+        const char* ptr = attlist_strs[i];
+        const char* end = ptr + strlen(ptr);
+        const char* data_ptr = ptr;
+        if (attlist_tokens[i] == XML_TOK_DECL_OPEN) data_ptr += 2;
+        if (attlist_tokens[i] == XML_TOK_POUND_NAME) data_ptr += 1;
+
+        int role = XmlTokenRole(&state_attlist, attlist_tokens[i], data_ptr, end, &enc_attlist);
+
+        printf("    {\n");
+        printf("      \"step\": %d,\n", i + 1);
+        printf("      \"input_token_str\": \"%s\",\n", ptr);
+        printf("      \"output_role\": \"%s\",\n", get_role_name(role));
+        printf("      \"next_handler\": \"%s\"\n", get_handler_name(state_attlist.handler));
+        printf("    }");
+        if (i < 5) printf(",\n");
+        else printf("\n");
+    }
+    printf("  ]");
+
+    /* Test Case: Error condition */
+    PROLOG_STATE state_error;
+    XmlPrologStateInit(&state_error);
+    ENCODING enc_error;
+    memset(&enc_error, 0, sizeof(ENCODING));
+    enc_error.minBytesPerChar = 1;
+
+    // An invalid token for the initial state
+    int role_err = XmlTokenRole(&state_error, XML_TOK_CLOSE_BRACKET, "]", "]" + 1, &enc_error);
+    printf(",\n");
+    printf("  \"XmlTokenRole_path_error\": {\n");
+    printf("    \"input_token_str\": \"]\",\n");
+    printf("    \"output_role\": \"%s\",\n", get_role_name(role_err));
+    printf("    \"next_handler\": \"%s\"\n", get_handler_name(state_error.handler));
+    printf("  }\n");
+
+    printf("}\n");
+    return 0;
+}

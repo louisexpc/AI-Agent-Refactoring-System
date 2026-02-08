@@ -1,0 +1,6 @@
+cmd: npm test
+exit_code: 127
+--- stdout ---
+
+--- stderr ---
+/bin/sh: 1: npm: not found

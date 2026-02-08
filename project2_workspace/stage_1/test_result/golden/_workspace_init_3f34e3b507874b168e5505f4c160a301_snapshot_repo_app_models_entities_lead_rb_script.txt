@@ -1,0 +1,424 @@
+require 'json'
+require 'active_record'
+require 'sqlite3'
+require 'logger'
+
+# Set up an in-memory SQLite database
+ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
+# ActiveRecord::Base.logger = Logger.new(STDOUT) # Uncomment for debugging SQL
+
+# Define the schema
+ActiveRecord::Schema.define do
+  create_table :leads do |t|
+    t.integer :user_id
+    t.integer :campaign_id
+    t.integer :assigned_to
+    t.string :first_name, limit: 64, default: "", null: false
+    t.string :last_name, limit: 64, default: "", null: false
+    t.string :access, limit: 8, default: "Public"
+    t.string :title, limit: 64
+    t.string :company, limit: 64
+    t.string :source, limit: 32
+    t.string :status, limit: 32
+    t.string :referred_by, limit: 64
+    t.string :email, limit: 64
+    t.string :alt_email, limit: 64
+    t.string :phone, limit: 32
+    t.string :mobile, limit: 32
+    t.string :blog, limit: 128
+    t.string :linkedin, limit: 128
+    t.string :facebook, limit: 128
+    t.string :twitter, limit: 128
+    t.integer :rating, default: 0, null: false
+    t.boolean :do_not_call, default: false, null: false
+    t.datetime :deleted_at
+    t.string :background_info, limit: 255
+    t.text :subscribed_users
+    t.timestamps
+  end
+
+  create_table :users do |t|
+    t.string :name
+  end
+
+  create_table :campaigns do |t|
+    t.string :name
+    t.integer :leads_count, default: 0
+  end
+
+  create_table :contacts do |t|
+    t.integer :lead_id
+    t.integer :account_id
+    t.integer :opportunity_id
+  end
+
+  create_table :accounts do |t|
+    t.string :name
+  end
+
+  create_table :opportunities do |t|
+    t.string :name
+  end
+
+  create_table :tasks do |t|
+    t.integer :asset_id
+    t.string :asset_type
+  end
+
+  create_table :addresses do |t|
+    t.integer :addressable_id
+    t.string :addressable_type
+    t.string :address_type
+    t.string :street1
+    t.string :city
+  end
+
+  create_table :permissions do |t|
+    t.references :user
+    t.references :asset, polymorphic: true
+  end
+end
+
+# --- Mocking Dependencies ---
+
+# Mock for global settings object
+class Setting
+  def self.setting_data
+    @setting_data ||= {
+      require_first_names: true,
+      require_last_names: true,
+      lead_status: [
+        ["New", :new],
+        ["Contacted", :contacted],
+        ["Converted", :converted],
+        ["Rejected", :rejected]
+      ]
+    }
+  end
+
+  def self.require_first_names
+    setting_data[:require_first_names]
+  end
+
+  def self.require_last_names
+    setting_data[:require_last_names]
+  end
+
+  def self.unroll(key)
+    setting_data[key]
+  end
+
+  def self.reset!
+    @setting_data = nil
+  end
+end
+
+# Mock for external gems and framework modules
+module MockMacros
+  def self.included(base)
+    base.extend ClassMethods
+  end
+
+  module ClassMethods
+    def uses_user_permissions
+      has_many :permissions, as: :asset, dependent: :destroy
+      has_many :shared_users, through: :permissions, source: :user
+    end
+
+    def acts_as_commentable; end
+    def uses_comment_extensions; end
+    def acts_as_taggable_on(*_args); end
+    def has_paper_trail(*_args); end
+    def has_fields; end
+    def exportable; end
+    def sortable(*_args); end
+    def has_ransackable_associations(*_args); end
+    def ransack_can_autocomplete; end
+
+    def ransack(query)
+      where(query.keys.first.gsub('_cont', ' LIKE ?'), "%#{query.values.first}%")
+    end
+  end
+
+  def save_with_model_permissions(model)
+    self.class.class_variable_set(:@@save_with_model_permissions_called, true)
+    self.class.class_variable_set(:@@model_permissions_source, model)
+    save
+  end
+end
+
+# Base models for associations
+class User < ActiveRecord::Base; end
+class Contact < ActiveRecord::Base
+  belongs_to :lead, optional: true
+  def self.create_for(lead, account, opportunity, params)
+    create(lead: lead, account: account, opportunity: opportunity)
+  end
+end
+class Task < ActiveRecord::Base
+  belongs_to :asset, polymorphic: true, optional: true
+end
+class Address < ActiveRecord::Base
+  belongs_to :addressable, polymorphic: true, optional: true
+  def self.reject_address(attributes)
+    attributes['street1'].blank? && attributes['city'].blank?
+  end
+end
+
+# Mocks for complex model interactions
+class Campaign < ActiveRecord::Base
+  has_many :leads
+end
+class Account < ActiveRecord::Base
+  def self.create_or_select_for(lead, params)
+    create(name: params[:name] || lead.company)
+  end
+end
+class Opportunity < ActiveRecord::Base
+  def self.create_for(lead, account, params)
+    return nil if params[:name].blank?
+    create(name: params[:name])
+  end
+end
+
+
+# Apply mocks to ActiveRecord::Base
+ActiveRecord::Base.include(MockMacros)
+
+# --- End of Mocking ---
+
+# The actual source file is required here, after all mocks are defined.
+require_relative '/workspace/init/3f34e3b507874b168e5505f4c160a301/snapshot/repo/app/models/entities/lead.rb'
+
+
+# --- Test Execution ---
+
+results = {}
+
+# Reset database and settings before each logical test group
+def setup_test
+  Lead.delete_all
+  User.delete_all
+  Campaign.delete_all
+  Contact.delete_all
+  Account.delete_all
+  Opportunity.delete_all
+  Task.delete_all
+  Address.delete_all
+  Setting.reset!
+end
+
+# Test Class Methods
+setup_test
+results['Lead_per_page_default'] = { value: Lead.per_page }
+results['Lead_first_name_position_default'] = { value: Lead.first_name_position }
+
+# Test Instance Methods: full_name
+setup_test
+lead = Lead.new(first_name: "John", last_name: "Doe")
+results['Lead_full_name_defaultFormat'] = { value: lead.full_name }
+results['Lead_name_alias'] = { value: lead.name }
+results['Lead_full_name_beforeFormat'] = { value: lead.full_name("before") }
+results['Lead_full_name_afterFormat'] = { value: lead.full_name("after") }
+lead_no_name = Lead.new
+results['Lead_full_name_noNames'] = { value: lead_no_name.full_name }
+
+# Test Validations
+setup_test
+Setting.setting_data[:require_first_names] = true
+lead = Lead.new(last_name: "Doe")
+lead.valid?
+results['Lead_validation_firstNameRequired'] = { valid: lead.valid?, errors: lead.errors.full_messages }
+
+setup_test
+Setting.setting_data[:require_first_names] = false
+lead = Lead.new(last_name: "Doe")
+results['Lead_validation_firstNameNotRequired'] = { valid: lead.valid?, errors: lead.errors.full_messages }
+
+setup_test
+Setting.setting_data[:require_last_names] = true
+lead = Lead.new(first_name: "John")
+lead.valid?
+results['Lead_validation_lastNameRequired'] = { valid: lead.valid?, errors: lead.errors.full_messages }
+
+setup_test
+Setting.setting_data[:require_last_names] = false
+lead = Lead.new(first_name: "John")
+results['Lead_validation_lastNameNotRequired'] = { valid: lead.valid?, errors: lead.errors.full_messages }
+
+setup_test
+lead = Lead.new(first_name: "John", last_name: "Doe", status: "invalid_status")
+results['Lead_validation_statusInvalid'] = { valid: lead.valid?, errors: lead.errors.full_messages }
+
+setup_test
+lead = Lead.new(first_name: "John", last_name: "Doe", status: "new")
+results['Lead_validation_statusValid'] = { valid: lead.valid?, errors: lead.errors.full_messages }
+
+setup_test
+lead = Lead.new(first_name: "John", last_name: "Doe", status: "")
+results['Lead_validation_statusBlank'] = { valid: lead.valid?, errors: lead.errors.full_messages }
+
+# Test Shared Access Validation
+setup_test
+user1 = User.create!
+lead = Lead.new(first_name: "Share", last_name: "Me", access: "Shared")
+results['Lead_validation_sharedAccessNoUsers'] = { valid: lead.valid?, errors: lead.errors.full_messages }
+lead.shared_users << user1
+results['Lead_validation_sharedAccessWithUsers'] = { valid: lead.valid?, errors: lead.errors.full_messages }
+lead.access = "Public"
+results['Lead_validation_publicAccess'] = { valid: lead.valid?, errors: lead.errors.full_messages }
+
+# Test Callbacks: increment/decrement campaign leads_count
+setup_test
+campaign = Campaign.create!(name: "Summer Sale")
+results['Lead_callbacks_initialCampaignCount'] = { count: campaign.leads_count }
+lead = Lead.create!(first_name: "First", last_name: "Lead", campaign: campaign)
+campaign.reload
+results['Lead_callbacks_afterCreateCampaignCount'] = { count: campaign.leads_count }
+lead.destroy
+campaign.reload
+results['Lead_callbacks_afterDestroyCampaignCount'] = { count: campaign.leads_count }
+
+setup_test
+lead_no_campaign = Lead.create!(first_name: "No", last_name: "Camp")
+results['Lead_callbacks_createWithoutCampaign'] = { count: Campaign.sum(:leads_count) }
+lead_no_campaign.destroy
+results['Lead_callbacks_destroyWithoutCampaign'] = { count: Campaign.sum(:leads_count) }
+
+# Test save_with_permissions
+setup_test
+Lead.class_variable_set(:@@save_with_model_permissions_called, false)
+campaign = Campaign.create!(name: "Test Campaign")
+lead = Lead.new
+lead.save_with_permissions({ lead: { first_name: "Test", last_name: "1", access: "Public" }, campaign: campaign.id.to_s })
+results['Lead_saveWithPermissions_public'] = {
+  persisted: lead.persisted?,
+  permissions_called: Lead.class_variable_get(:@@save_with_model_permissions_called)
+}
+
+setup_test
+Lead.class_variable_set(:@@save_with_model_permissions_called, false)
+Lead.class_variable_set(:@@model_permissions_source, nil)
+campaign = Campaign.create!(name: "Test Campaign")
+lead = Lead.new
+lead.save_with_permissions({ lead: { first_name: "Test", last_name: "2", access: "Campaign" }, campaign: campaign.id.to_s })
+results['Lead_saveWithPermissions_campaignAccess'] = {
+  persisted: lead.persisted?,
+  permissions_called: Lead.class_variable_get(:@@save_with_model_permissions_called),
+  source_model_class: Lead.class_variable_get(:@@model_permissions_source).class.name,
+  source_model_id: Lead.class_variable_get(:@@model_permissions_source).id
+}
+
+# Test update_with_lead_counters
+setup_test
+c1 = Campaign.create!(name: "C1")
+c2 = Campaign.create!(name: "C2")
+lead = Lead.create!(first_name: "Counter", last_name: "Test", campaign: c1)
+c1.reload
+results['Lead_updateWithLeadCounters_initial'] = { c1_count: c1.leads_count, c2_count: c2.leads_count }
+lead.update_with_lead_counters({ campaign_id: c2.id })
+c1.reload
+c2.reload
+results['Lead_updateWithLeadCounters_campaignChanged'] = { c1_count: c1.leads_count, c2_count: c2.leads_count, lead_campaign_id: lead.campaign_id }
+lead.update_with_lead_counters({ campaign_id: nil })
+c1.reload
+c2.reload
+results['Lead_updateWithLeadCounters_campaignRemoved'] = { c1_count: c1.leads_count, c2_count: c2.leads_count, lead_campaign_id: lead.campaign_id }
+
+# Test promote
+setup_test
+lead = Lead.create!(first_name: "Promote", last_name: "Me", company: "BigCorp")
+account, opportunity, contact = lead.promote({
+  account: { name: "NewCorp" },
+  opportunity: { name: "Big Deal" }
+})
+results['Lead_promote_full'] = {
+  account_class: account.class.name,
+  account_name: account.name,
+  opportunity_class: opportunity.class.name,
+  opportunity_name: opportunity.name,
+  contact_class: contact.class.name,
+  contact_lead_id: contact.lead_id
+}
+
+setup_test
+lead = Lead.create!(first_name: "Promote", last_name: "NoOpp", company: "SmallCorp")
+account, opportunity, contact = lead.promote({
+  account: { name: "" }, # uses lead.company
+  opportunity: { name: "" } # should be nil
+})
+results['Lead_promote_noOpportunity'] = {
+  account_class: account.class.name,
+  account_name: account.name,
+  opportunity_is_nil: opportunity.nil?,
+  contact_class: contact.class.name
+}
+
+# Test convert and reject
+setup_test
+lead_to_convert = Lead.create!(first_name: "Convert", last_name: "Me")
+lead_to_convert.convert
+results['Lead_convert_status'] = { status: lead_to_convert.status }
+
+setup_test
+lead_to_reject = Lead.create!(first_name: "Reject", last_name: "Me")
+lead_to_reject.reject
+results['Lead_reject_status'] = { status: lead_to_reject.status }
+
+# Test attach! and discard!
+setup_test
+lead = Lead.create!(first_name: "Task", last_name: "Master")
+task1 = Task.create!
+task2 = Task.create!
+lead.attach!(task1)
+results['Lead_attach_firstTask'] = { task_count: lead.tasks.count, task_ids: lead.task_ids }
+lead.attach!(task1) # Attach same task again
+results['Lead_attach_duplicateTask'] = { task_count: lead.tasks.count, task_ids: lead.task_ids }
+lead.attach!(task2)
+results['Lead_attach_secondTask'] = { task_count: lead.tasks.count, task_ids: lead.task_ids }
+lead.discard!(task1)
+task1.reload
+results['Lead_discard_task'] = { task_count: lead.tasks.count, task1_asset_id: task1.asset_id, task1_asset_type: task1.asset_type }
+
+# Test Nested Attributes for Address
+setup_test
+lead_attrs = {
+  first_name: "Address", last_name: "Test",
+  business_address_attributes: { street1: "123 Main St", city: "Anytown" }
+}
+lead = Lead.create(lead_attrs)
+results['Lead_nestedAttributes_createAddress'] = {
+  lead_persisted: lead.persisted?,
+  address_class: lead.business_address.class.name,
+  address_street: lead.business_address.street1
+}
+
+setup_test
+lead_attrs_reject = {
+  first_name: "Address", last_name: "Reject",
+  business_address_attributes: { street1: "", city: "" } # Should be rejected
+}
+lead = Lead.create(lead_attrs_reject)
+results['Lead_nestedAttributes_rejectEmptyAddress'] = {
+  lead_persisted: lead.persisted?,
+  address_is_nil: lead.business_address.nil?
+}
+
+# Test scopes
+setup_test
+u1 = User.create!
+c1 = Campaign.create!
+Lead.create!(first_name: 'A', last_name: 'A', company: 'CompA', email: 'a@a.com', status: 'new', user: u1, campaign: c1, assigned_to: u1.id)
+Lead.create!(first_name: 'B', last_name: 'B', company: 'CompB', email: 'b@b.com', status: 'converted')
+Lead.create!(first_name: 'C', last_name: 'C', company: 'CompC', email: 'c@c.com', status: 'rejected')
+Lead.create!(first_name: 'D', last_name: 'D', company: 'CompD', email: 'd@d.com', status: nil)
+
+results['Lead_scope_stateNew'] = { count: Lead.state(['new']).count }
+results['Lead_scope_stateWithOther'] = { count: Lead.state(['new', 'other']).count }
+results['Lead_scope_converted'] = { count: Lead.converted.count, status: Lead.converted.first.status }
+results['Lead_scope_for_campaign'] = { count: Lead.for_campaign(c1.id).count, lead_id: Lead.for_campaign(c1.id).first.id }
+results['Lead_scope_created_by'] = { count: Lead.created_by(u1).count }
+results['Lead_scope_assigned_to'] = { count: Lead.assigned_to(u1).count }
+results['Lead_scope_text_search'] = { count: Lead.text_search('CompB').count, company: Lead.text_search('CompB').first.company }
+
+puts JSON.dump(results)

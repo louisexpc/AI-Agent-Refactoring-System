@@ -1,0 +1,508 @@
+An executable C program that captures the behavioral output of `xmlrole.c` functions.
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <stddef.h>
+
+// --- Stubs and Definitions for Compilation ---
+
+// From expat_config.h, can be changed with -D or -U
+#ifndef XML_DTD
+#  define XML_DTD 1
+#endif
+
+// From internal.h
+#ifndef PTRCALL
+#  define PTRCALL
+#endif
+#ifndef FASTCALL
+#  define FASTCALL
+#endif
+#ifndef UNUSED_P
+#  define UNUSED_P(p) (void)p
+#endif
+
+// From xmltok.h: Tokens
+enum {
+  XML_TOK_TRAILING_RSQB = -5, XML_TOK_NONE = -4, XML_TOK_TRAILING_CR = -3,
+  XML_TOK_PARTIAL_CHAR = -2, XML_TOK_PARTIAL = -1, XML_TOK_INVALID = 0,
+  XML_TOK_START_TAG_WITH_ATTS = 1, XML_TOK_START_TAG_NO_ATTS = 2,
+  XML_TOK_EMPTY_ELEMENT_WITH_ATTS = 3, XML_TOK_EMPTY_ELEMENT_NO_ATTS = 4,
+  XML_TOK_END_TAG = 5, XML_TOK_DATA_CHARS = 6, XML_TOK_DATA_NEWLINE = 7,
+  XML_TOK_CDATA_SECT_OPEN = 8, XML_TOK_ENTITY_REF = 9, XML_TOK_CHAR_REF = 10,
+  XML_TOK_PI = 11, XML_TOK_XML_DECL = 12, XML_TOK_COMMENT = 13, XML_TOK_BOM = 14,
+  XML_TOK_PROLOG_S = 15, XML_TOK_DECL_OPEN = 16, XML_TOK_DECL_CLOSE = 17,
+  XML_TOK_NAME = 18, XML_TOK_NMTOKEN = 19, XML_TOK_POUND_NAME = 20,
+  XML_TOK_OR = 21, XML_TOK_PERCENT = 22, XML_TOK_OPEN_PAREN = 23,
+  XML_TOK_CLOSE_PAREN = 24, XML_TOK_OPEN_BRACKET = 25,
+  XML_TOK_CLOSE_BRACKET = 26, XML_TOK_LITERAL = 27,
+  XML_TOK_PARAM_ENTITY_REF = 28, XML_TOK_INSTANCE_START = 29,
+  XML_TOK_NAME_QUESTION = 30, XML_TOK_NAME_ASTERISK = 31,
+  XML_TOK_NAME_PLUS = 32, XML_TOK_COND_SECT_OPEN = 33,
+  XML_TOK_COND_SECT_CLOSE = 34, XML_TOK_CLOSE_PAREN_QUESTION = 35,
+  XML_TOK_CLOSE_PAREN_ASTERISK = 36, XML_TOK_CLOSE_PAREN_PLUS = 37,
+  XML_TOK_COMMA = 38, XML_TOK_ATTRIBUTE_VALUE_S = 39,
+  XML_TOK_CDATA_SECT_CLOSE = 40, XML_TOK_PREFIXED_NAME = 41,
+#ifdef XML_DTD
+  XML_TOK_IGNORE_SECT = 42
+#endif
+};
+
+struct encoding;
+typedef struct encoding ENCODING;
+
+typedef int(PTRCALL *NAME_MATCHES_ASCII_CALLBACK)(const ENCODING *, const char *, const char *, const char *);
+
+// From xmltok.h: ENCODING struct
+struct encoding {
+  void *scanners[4];
+  void *literalScanners[2];
+  NAME_MATCHES_ASCII_CALLBACK nameMatchesAscii;
+  void *nameLength;
+  void *skipS;
+  void *getAtts;
+  void *charRefNumber;
+  void *predefinedEntityName;
+  void *updatePosition;
+  void *isPublicId;
+  void *utf8Convert;
+  void *utf16Convert;
+  int minBytesPerChar;
+  char isUtf8;
+  char isUtf16;
+};
+
+#define MIN_BYTES_PER_CHAR(enc) ((enc)->minBytesPerChar)
+
+// From ascii.h
+#define ASCII_A 0x41
+#define ASCII_N 0x4E
+#define ASCII_Y 0x59
+#define ASCII_T 0x54
+#define ASCII_L 0x4C
+#define ASCII_I 0x49
+#define ASCII_S 0x53
+#define ASCII_C 0x43
+#define ASCII_D 0x44
+#define ASCII_O 0x4F
+#define ASCII_P 0x50
+#define ASCII_E 0x45
+#define ASCII_M 0x4D
+#define ASCII_F 0x46
+#define ASCII_X 0x58
+#define ASCII_R 0x52
+#define ASCII_G 0x47
+#define ASCII_U 0x55
+#define ASCII_B 0x42
+#define ASCII_Q 0x51
+#define ASCII_K 0x4B
+
+
+// --- Start of code under test ---
+#include "xmlrole.h"
+#include "xmlrole.c"
+// --- End of code under test ---
+
+
+// --- Mocking Infrastructure ---
+
+// Globals to control the mock's behavior
+static const char* mock_keyword_to_match = NULL;
+static const char* mock_last_ptr_arg = NULL;
+
+// Mock for the name matching function
+static int mock_name_matches_ascii_impl(const ENCODING *enc, const char *ptr, const char *end, const char *kw) {
+    UNUSED_P(enc);
+    UNUSED_P(end);
+    mock_last_ptr_arg = ptr;
+    if (mock_keyword_to_match != NULL && strcmp(mock_keyword_to_match, kw) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+// Bridge function to match the signature `XmlNameMatchesAscii` used in xmlrole.c
+int XmlNameMatchesAscii(const ENCODING *enc, const char *ptr, const char *end, const char *s) {
+    if (enc->nameMatchesAscii) {
+        return enc->nameMatchesAscii(enc, ptr, end, s);
+    }
+    return 0;
+}
+
+
+// --- Test Infrastructure ---
+
+// Helper to convert handler function pointer to a string for logging
+const char* get_handler_name(const PROLOG_STATE *state) {
+    if (state->handler == prolog0) return "prolog0";
+    if (state->handler == prolog1) return "prolog1";
+    if (state->handler == prolog2) return "prolog2";
+    if (state->handler == doctype0) return "doctype0";
+    if (state->handler == doctype1) return "doctype1";
+    if (state->handler == doctype2) return "doctype2";
+    if (state->handler == doctype3) return "doctype3";
+    if (state->handler == doctype4) return "doctype4";
+    if (state->handler == doctype5) return "doctype5";
+    if (state->handler == internalSubset) return "internalSubset";
+    if (state->handler == entity0) return "entity0";
+    if (state->handler == entity1) return "entity1";
+    if (state->handler == entity2) return "entity2";
+    if (state->handler == entity3) return "entity3";
+    if (state->handler == entity4) return "entity4";
+    if (state->handler == entity5) return "entity5";
+    if (state->handler == entity6) return "entity6";
+    if (state->handler == entity7) return "entity7";
+    if (state->handler == entity8) return "entity8";
+    if (state->handler == entity9) return "entity9";
+    if (state->handler == entity10) return "entity10";
+    if (state->handler == notation0) return "notation0";
+    if (state->handler == notation1) return "notation1";
+    if (state->handler == notation2) return "notation2";
+    if (state->handler == notation3) return "notation3";
+    if (state->handler == notation4) return "notation4";
+    if (state->handler == attlist0) return "attlist0";
+    if (state->handler == attlist1) return "attlist1";
+    if (state->handler == attlist2) return "attlist2";
+    if (state->handler == attlist3) return "attlist3";
+    if (state->handler == attlist4) return "attlist4";
+    if (state->handler == attlist5) return "attlist5";
+    if (state->handler == attlist6) return "attlist6";
+    if (state->handler == attlist7) return "attlist7";
+    if (state->handler == attlist8) return "attlist8";
+    if (state->handler == attlist9) return "attlist9";
+    if (state->handler == element0) return "element0";
+    if (state->handler == element1) return "element1";
+    if (state->handler == element2) return "element2";
+    if (state->handler == element3) return "element3";
+    if (state->handler == element4) return "element4";
+    if (state->handler == element5) return "element5";
+    if (state->handler == element6) return "element6";
+    if (state->handler == element7) return "element7";
+#ifdef XML_DTD
+    if (state->handler == externalSubset0) return "externalSubset0";
+    if (state->handler == externalSubset1) return "externalSubset1";
+    if (state->handler == condSect0) return "condSect0";
+    if (state->handler == condSect1) return "condSect1";
+    if (state->handler == condSect2) return "condSect2";
+#endif
+    if (state->handler == declClose) return "declClose";
+    if (state->handler == error) return "error";
+    return "unknown";
+}
+
+static int is_first_output = 1;
+
+void print_json_prologue(const char *key) {
+    if (!is_first_output) {
+        printf(",\n");
+    }
+    is_first_output = 0;
+    printf("  \"%s\": {\n", key);
+}
+
+void print_json_epilogue(void) {
+    printf("  }");
+}
+
+// Main test function for a single state transition
+void test_transition(const char* key, const PROLOG_STATE* initial_state, int tok, const char* keyword, ENCODING* enc) {
+    PROLOG_STATE state = *initial_state;
+    mock_keyword_to_match = keyword;
+    mock_last_ptr_arg = NULL;
+
+    char buffer[32]; // Buffer for ptr/end to test offsets
+    const char *ptr = buffer;
+    const char *end = ptr + sizeof(buffer) -1;
+
+    int role = XmlTokenRole(&state, tok, ptr, end, enc);
+
+    print_json_prologue(key);
+    printf("    \"role\": %d,\n", role);
+    printf("    \"next_handler\": \"%s\",\n", get_handler_name(&state));
+    if (mock_last_ptr_arg) {
+        printf("    \"nameMatchesAscii_ptr_offset\": %ld,\n", (long)(mock_last_ptr_arg - ptr));
+    }
+    printf("    \"level\": %u,\n", state.level);
+    printf("    \"role_none\": %d", state.role_none);
+#ifdef XML_DTD
+    printf(",\n");
+    printf("    \"includeLevel\": %u,\n", state.includeLevel);
+    printf("    \"documentEntity\": %d,\n", state.documentEntity);
+    printf("    \"inEntityValue\": %d\n", state.inEntityValue);
+#else
+    printf("\n");
+#endif
+    print_json_epilogue();
+}
+
+void run_all_tests(void);
+
+int main(void) {
+    printf("{\n");
+    run_all_tests();
+    printf("\n}\n");
+    return 0;
+}
+
+void run_all_tests(void) {
+    ENCODING mock_enc;
+    memset(&mock_enc, 0, sizeof(ENCODING));
+    mock_enc.minBytesPerChar = 1;
+    mock_enc.nameMatchesAscii = mock_name_matches_ascii_impl;
+    
+    ENCODING mock_enc4; // For testing minBytesPerChar > 1
+    memset(&mock_enc4, 0, sizeof(ENCODING));
+    mock_enc4.minBytesPerChar = 4;
+    mock_enc4.nameMatchesAscii = mock_name_matches_ascii_impl;
+
+    PROLOG_STATE state;
+
+    // --- XmlPrologStateInit ---
+    XmlPrologStateInit(&state);
+    print_json_prologue("XmlPrologStateInit");
+    printf("    \"handler\": \"%s\"", get_handler_name(&state));
+#ifdef XML_DTD
+    printf(",\n    \"documentEntity\": %d,\n", state.documentEntity);
+    printf("    \"includeLevel\": %u,\n", state.includeLevel);
+    printf("    \"inEntityValue\": %d\n", state.inEntityValue);
+#endif
+    printf("\n");
+    print_json_epilogue();
+
+#ifdef XML_DTD
+    // --- XmlPrologStateInitExternalEntity ---
+    XmlPrologStateInitExternalEntity(&state);
+    print_json_prologue("XmlPrologStateInitExternalEntity");
+    printf("    \"handler\": \"%s\",\n", get_handler_name(&state));
+    printf("    \"documentEntity\": %d,\n", state.documentEntity);
+    printf("    \"includeLevel\": %u\n", state.includeLevel);
+    print_json_epilogue();
+#endif
+    
+    // --- State Machine Transitions ---
+    PROLOG_STATE initial_state;
+    memset(&initial_state, 0, sizeof(PROLOG_STATE));
+#ifdef XML_DTD
+    initial_state.documentEntity = 1;
+#endif
+
+    // Helper macro to reduce boilerplate
+#define TEST_TRANS(handler_func, token, keyword_const, key_suffix) \
+    initial_state.handler = handler_func; \
+    test_transition(#handler_func "_" #token "_" #key_suffix, &initial_state, token, keyword_const, &mock_enc)
+
+    // prolog0
+    TEST_TRANS(prolog0, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(prolog0, XML_TOK_XML_DECL, NULL, none);
+    TEST_TRANS(prolog0, XML_TOK_PI, NULL, none);
+    TEST_TRANS(prolog0, XML_TOK_COMMENT, NULL, none);
+    TEST_TRANS(prolog0, XML_TOK_BOM, NULL, none);
+    TEST_TRANS(prolog0, XML_TOK_DECL_OPEN, KW_DOCTYPE, is_doctype);
+    TEST_TRANS(prolog0, XML_TOK_DECL_OPEN, NULL, not_doctype);
+    initial_state.handler = prolog0; test_transition("prolog0_XML_TOK_DECL_OPEN_is_doctype_mBPC4", &initial_state, XML_TOK_DECL_OPEN, KW_DOCTYPE, &mock_enc4);
+    TEST_TRANS(prolog0, XML_TOK_INSTANCE_START, NULL, none);
+    TEST_TRANS(prolog0, XML_TOK_INVALID, NULL, common_error);
+
+    // prolog1
+    TEST_TRANS(prolog1, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(prolog1, XML_TOK_PI, NULL, none);
+    TEST_TRANS(prolog1, XML_TOK_COMMENT, NULL, none);
+    TEST_TRANS(prolog1, XML_TOK_DECL_OPEN, KW_DOCTYPE, is_doctype);
+    TEST_TRANS(prolog1, XML_TOK_DECL_OPEN, NULL, not_doctype);
+    TEST_TRANS(prolog1, XML_TOK_INSTANCE_START, NULL, none);
+    TEST_TRANS(prolog1, XML_TOK_INVALID, NULL, common_error);
+
+    // prolog2
+    TEST_TRANS(prolog2, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(prolog2, XML_TOK_PI, NULL, none);
+    TEST_TRANS(prolog2, XML_TOK_COMMENT, NULL, none);
+    TEST_TRANS(prolog2, XML_TOK_INSTANCE_START, NULL, none);
+    TEST_TRANS(prolog2, XML_TOK_INVALID, NULL, common_error);
+    
+    // doctype0
+    TEST_TRANS(doctype0, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(doctype0, XML_TOK_NAME, NULL, none);
+    TEST_TRANS(doctype0, XML_TOK_PREFIXED_NAME, NULL, none);
+    TEST_TRANS(doctype0, XML_TOK_INVALID, NULL, common_error);
+
+    // doctype1
+    TEST_TRANS(doctype1, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(doctype1, XML_TOK_OPEN_BRACKET, NULL, none);
+    TEST_TRANS(doctype1, XML_TOK_DECL_CLOSE, NULL, none);
+    TEST_TRANS(doctype1, XML_TOK_NAME, KW_SYSTEM, is_system);
+    TEST_TRANS(doctype1, XML_TOK_NAME, KW_PUBLIC, is_public);
+    TEST_TRANS(doctype1, XML_TOK_NAME, NULL, other_name);
+    TEST_TRANS(doctype1, XML_TOK_INVALID, NULL, common_error);
+    
+    // doctype2
+    TEST_TRANS(doctype2, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(doctype2, XML_TOK_LITERAL, NULL, none);
+    TEST_TRANS(doctype2, XML_TOK_INVALID, NULL, common_error);
+
+    // doctype3
+    TEST_TRANS(doctype3, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(doctype3, XML_TOK_LITERAL, NULL, none);
+    TEST_TRANS(doctype3, XML_TOK_INVALID, NULL, common_error);
+    
+    // doctype4
+    TEST_TRANS(doctype4, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(doctype4, XML_TOK_OPEN_BRACKET, NULL, none);
+    TEST_TRANS(doctype4, XML_TOK_DECL_CLOSE, NULL, none);
+    TEST_TRANS(doctype4, XML_TOK_INVALID, NULL, common_error);
+    
+    // doctype5
+    TEST_TRANS(doctype5, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(doctype5, XML_TOK_DECL_CLOSE, NULL, none);
+    TEST_TRANS(doctype5, XML_TOK_INVALID, NULL, common_error);
+
+    // internalSubset
+    TEST_TRANS(internalSubset, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(internalSubset, XML_TOK_DECL_OPEN, KW_ENTITY, is_entity);
+    TEST_TRANS(internalSubset, XML_TOK_DECL_OPEN, KW_ATTLIST, is_attlist);
+    TEST_TRANS(internalSubset, XML_TOK_DECL_OPEN, KW_ELEMENT, is_element);
+    TEST_TRANS(internalSubset, XML_TOK_DECL_OPEN, KW_NOTATION, is_notation);
+    TEST_TRANS(internalSubset, XML_TOK_DECL_OPEN, NULL, other);
+    TEST_TRANS(internalSubset, XML_TOK_PI, NULL, none);
+    TEST_TRANS(internalSubset, XML_TOK_COMMENT, NULL, none);
+    TEST_TRANS(internalSubset, XML_TOK_PARAM_ENTITY_REF, NULL, none);
+    TEST_TRANS(internalSubset, XML_TOK_CLOSE_BRACKET, NULL, none);
+    TEST_TRANS(internalSubset, XML_TOK_NONE, NULL, none);
+#ifdef XML_DTD
+    initial_state.handler = internalSubset;
+    initial_state.documentEntity = 0;
+    test_transition("internalSubset_XML_TOK_PARAM_ENTITY_REF_inExtEnt", &initial_state, XML_TOK_PARAM_ENTITY_REF, NULL, &mock_enc);
+    initial_state.documentEntity = 1; // restore
+#endif
+
+    // declClose
+    initial_state.handler = declClose;
+    initial_state.role_none = XML_ROLE_ENTITY_NONE;
+    test_transition("declClose_XML_TOK_PROLOG_S_fromEntity", &initial_state, XML_TOK_PROLOG_S, NULL, &mock_enc);
+    test_transition("declClose_XML_TOK_DECL_CLOSE_fromEntity", &initial_state, XML_TOK_DECL_CLOSE, NULL, &mock_enc);
+    initial_state.role_none = XML_ROLE_ELEMENT_NONE;
+    test_transition("declClose_XML_TOK_DECL_CLOSE_fromElement", &initial_state, XML_TOK_DECL_CLOSE, NULL, &mock_enc);
+
+#ifdef XML_DTD
+    // setTopLevel with documentEntity = 0
+    initial_state.handler = declClose;
+    initial_state.documentEntity = 0;
+    test_transition("declClose_XML_TOK_DECL_CLOSE_inExtEnt", &initial_state, XML_TOK_DECL_CLOSE, NULL, &mock_enc);
+    initial_state.documentEntity = 1;
+#endif
+
+    // entity* handlers
+    TEST_TRANS(entity0, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(entity0, XML_TOK_PERCENT, NULL, none);
+    TEST_TRANS(entity0, XML_TOK_NAME, NULL, none);
+    TEST_TRANS(entity1, XML_TOK_PROLOG_S, NULL, none);
+    TEST_TRANS(entity1, XML_TOK_NAME, NULL, none);
+    TEST_TRANS(entity2, XML_TOK_LITERAL, NULL, none);
+    TEST_TRANS(entity2, XML_TOK_NAME, KW_SYSTEM, is_system);
+    TEST_TRANS(entity2, XML_TOK_NAME, KW_PUBLIC, is_public);
+    TEST_TRANS(entity3, XML_TOK_LITERAL, NULL, none);
+    TEST_TRANS(entity4, XML_TOK_LITERAL, NULL, none);
+    TEST_TRANS(entity5, XML_TOK_DECL_CLOSE, NULL, none);
+    TEST_TRANS(entity5, XML_TOK_NAME, KW_NDATA, is_ndata);
+    TEST_TRANS(entity6, XML_TOK_NAME, NULL, none);
+    TEST_TRANS(entity7, XML_TOK_LITERAL, NULL, none);
+    TEST_TRANS(entity7, XML_TOK_NAME, KW_SYSTEM, is_system);
+    TEST_TRANS(entity7, XML_TOK_NAME, KW_PUBLIC, is_public);
+    TEST_TRANS(entity8, XML_TOK_LITERAL, NULL, none);
+    TEST_TRANS(entity9, XML_TOK_LITERAL, NULL, none);
+    TEST_TRANS(entity10, XML_TOK_DECL_CLOSE, NULL, none);
+
+    // notation* handlers
+    TEST_TRANS(notation0, XML_TOK_NAME, NULL, none);
+    TEST_TRANS(notation1, XML_TOK_NAME, KW_SYSTEM, is_system);
+    TEST_TRANS(notation1, XML_TOK_NAME, KW_PUBLIC, is_public);
+    TEST_TRANS(notation2, XML_TOK_LITERAL, NULL, none);
+    TEST_TRANS(notation3, XML_TOK_LITERAL, NULL, none);
+    TEST_TRANS(notation4, XML_TOK_LITERAL, NULL, none);
+    TEST_TRANS(notation4, XML_TOK_DECL_CLOSE, NULL, no_system_id);
+
+    // attlist* handlers
+    TEST_TRANS(attlist0, XML_TOK_NAME, NULL, none);
+    TEST_TRANS(attlist1, XML_TOK_DECL_CLOSE, NULL, none);
+    TEST_TRANS(attlist1, XML_TOK_NAME, NULL, attr_name);
+    TEST_TRANS(attlist2, XML_TOK_NAME, KW_CDATA, is_cdata);
+    TEST_TRANS(attlist2, XML_TOK_NAME, KW_ID, is_id);
+    TEST_TRANS(attlist2, XML_TOK_NAME, KW_IDREF, is_idref);
+    TEST_TRANS(attlist2, XML_TOK_NAME, KW_IDREFS, is_idrefs);
+    TEST_TRANS(attlist2, XML_TOK_NAME, KW_ENTITY, is_entity);
+    TEST_TRANS(attlist2, XML_TOK_NAME, KW_ENTITIES, is_entities);
+    TEST_TRANS(attlist2, XML_TOK_NAME, KW_NMTOKEN, is_nmtoken);
+    TEST_TRANS(attlist2, XML_TOK_NAME, KW_NMTOKENS, is_nmtokens);
+    TEST_TRANS(attlist2, XML_TOK_NAME, KW_NOTATION, is_notation);
+    TEST_TRANS(attlist2, XML_TOK_OPEN_PAREN, NULL, enum_type);
+    TEST_TRANS(attlist3, XML_TOK_NMTOKEN, NULL, enum_val);
+    TEST_TRANS(attlist4, XML_TOK_CLOSE_PAREN, NULL, none);
+    TEST_TRANS(attlist4, XML_TOK_OR, NULL, none);
+    TEST_TRANS(attlist5, XML_TOK_OPEN_PAREN, NULL, none);
+    TEST_TRANS(attlist6, XML_TOK_NAME, NULL, none);
+    TEST_TRANS(attlist7, XML_TOK_CLOSE_PAREN, NULL, none);
+    TEST_TRANS(attlist7, XML_TOK_OR, NULL, none);
+    TEST_TRANS(attlist8, XML_TOK_POUND_NAME, KW_IMPLIED, is_implied);
+    TEST_TRANS(attlist8, XML_TOK_POUND_NAME, KW_REQUIRED, is_required);
+    TEST_TRANS(attlist8, XML_TOK_POUND_NAME, KW_FIXED, is_fixed);
+    TEST_TRANS(attlist8, XML_TOK_LITERAL, NULL, default_val);
+    TEST_TRANS(attlist9, XML_TOK_LITERAL, NULL, fixed_val);
+
+    // element* handlers
+    TEST_TRANS(element0, XML_TOK_NAME, NULL, none);
+    TEST_TRANS(element1, XML_TOK_NAME, KW_EMPTY, is_empty);
+    TEST_TRANS(element1, XML_TOK_NAME, KW_ANY, is_any);
+    TEST_TRANS(element1, XML_TOK_OPEN_PAREN, NULL, group_open);
+    TEST_TRANS(element2, XML_TOK_POUND_NAME, KW_PCDATA, is_pcdata);
+    TEST_TRANS(element2, XML_TOK_OPEN_PAREN, NULL, group_open);
+    TEST_TRANS(element2, XML_TOK_NAME, NULL, content_element);
+    TEST_TRANS(element2, XML_TOK_NAME_QUESTION, NULL, content_element_opt);
+    TEST_TRANS(element2, XML_TOK_NAME_ASTERISK, NULL, content_element_rep);
+    TEST_TRANS(element2, XML_TOK_NAME_PLUS, NULL, content_element_plus);
+    TEST_TRANS(element3, XML_TOK_CLOSE_PAREN, NULL, none);
+    TEST_TRANS(element3, XML_TOK_CLOSE_PAREN_ASTERISK, NULL, none);
+    TEST_TRANS(element3, XML_TOK_OR, NULL, none);
+    TEST_TRANS(element4, XML_TOK_NAME, NULL, none);
+    TEST_TRANS(element5, XML_TOK_CLOSE_PAREN_ASTERISK, NULL, none);
+    TEST_TRANS(element5, XML_TOK_OR, NULL, none);
+    TEST_TRANS(element6, XML_TOK_OPEN_PAREN, NULL, none);
+    TEST_TRANS(element6, XML_TOK_NAME, NULL, none);
+    TEST_TRANS(element7, XML_TOK_CLOSE_PAREN, NULL, none);
+    TEST_TRANS(element7, XML_TOK_CLOSE_PAREN_ASTERISK, NULL, none);
+    TEST_TRANS(element7, XML_TOK_CLOSE_PAREN_QUESTION, NULL, none);
+    TEST_TRANS(element7, XML_TOK_CLOSE_PAREN_PLUS, NULL, none);
+    TEST_TRANS(element7, XML_TOK_COMMA, NULL, sequence);
+    TEST_TRANS(element7, XML_TOK_OR, NULL, choice);
+    
+    // Level tracking in element model
+    initial_state.handler = element1;
+    test_transition("element_level_tracking_1", &initial_state, XML_TOK_OPEN_PAREN, NULL, &mock_enc); // level -> 1
+    initial_state.handler = element2; initial_state.level = 1;
+    test_transition("element_level_tracking_2", &initial_state, XML_TOK_OPEN_PAREN, NULL, &mock_enc); // level -> 2
+    initial_state.handler = element6; initial_state.level = 2;
+    test_transition("element_level_tracking_3", &initial_state, XML_TOK_NAME, NULL, &mock_enc); // level -> 2
+    initial_state.handler = element7; initial_state.level = 2;
+    test_transition("element_level_tracking_4", &initial_state, XML_TOK_CLOSE_PAREN, NULL, &mock_enc); // level -> 1
+    initial_state.handler = element7; initial_state.level = 1;
+    test_transition("element_level_tracking_5", &initial_state, XML_TOK_CLOSE_PAREN, NULL, &mock_enc); // level -> 0 -> declClose
+
+
+#ifdef XML_DTD
+    // externalSubset* handlers
+    TEST_TRANS(externalSubset0, XML_TOK_XML_DECL, NULL, text_decl);
+    TEST_TRANS(externalSubset0, XML_TOK_PROLOG_S, NULL, no_text_decl);
+    TEST_TRANS(externalSubset1, XML_TOK_COND_SECT_OPEN, NULL, none);
+    TEST_TRANS(externalSubset1, XML_TOK_COND_SECT_CLOSE, NULL, error_close);
+    initial_state.handler = externalSubset1; initial_state.includeLevel = 1;
+    test_transition("externalSubset1_XML_TOK_COND_SECT_CLOSE_valid", &initial_state, XML_TOK_COND_SECT_CLOSE, NULL, &mock_enc);
+    TEST_TRANS(externalSubset1, XML_TOK_NONE, NULL, none);
+    initial_state.handler = externalSubset1; initial_state.includeLevel = 1;
+    test_transition("externalSubset1_XML_TOK_NONE_in_include", &initial_state, XML_TOK_NONE, NULL, &mock_enc);
+
+    // condSect* handlers
+    TEST_TRANS(condSect0, XML_TOK_NAME, KW_INCLUDE, is_include);
+    TEST_TRANS(condSect0, XML_TOK_NAME, KW_IGNORE, is_ignore);
+    TEST_TRANS(condSect1, XML_TOK_OPEN_BRACKET, NULL, none);
+    TEST_TRANS(condSect2, XML_TOK_OPEN_BRACKET, NULL, none);
+#endif
+}
