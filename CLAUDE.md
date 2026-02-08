@@ -1,4 +1,4 @@
-# AI Context - TSMC 2026 Hackathon
+# AI Context
 
 AI 輔助舊程式碼重構系統。詳細文件請見 README.md。
 

@@ -1,4 +1,4 @@
-# TSMC 2026 Hackathon - AI 智能重構系統
+# AI Agent Refactoring System
 
 AI 輔助的舊程式碼重構系統，支援跨語言轉換與自動化測試驗證。
 

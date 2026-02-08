@@ -197,20 +197,3 @@ def filter_depreverseindex_json(json_path: str | Path, lang: Language) -> Path:
     )
     return out_path
 
-
-if __name__ == "__main__":
-    root = (
-        "/home/louisexpc/TSMC-2026-Hackathon/artifacts/2cca5c3ab95b491a9d42d7915c286bc6"
-    )
-    dep_graph_path = root + r"/depgraph/dep_graph_light.json"
-    output_path = filter_depgraph_json(dep_graph_path, Language.PYTHON)
-    print(f"Filtered DepGraph JSON written to: {output_path}")
-    metric_json_path = root + r"/depgraph/dep_metrics.json"
-    output_metric_path = filter_depmetrics_json(metric_json_path, Language.PYTHON)
-    print(f"Filtered DepMetrics JSON written to: {output_metric_path}")
-
-    dep_reverse_json_path = root + r"/depgraph/dep_reverse_index_light.json"
-    output_depreverse_path = filter_depreverseindex_json(
-        dep_reverse_json_path, Language.PYTHON
-    )
-    print(f"Filtered DepReverseIndex JSON written to: {output_depreverse_path}")

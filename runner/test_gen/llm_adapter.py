@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # 已知的 GCP key file 路徑（專案內）
 _DEFAULT_KEY_PATH = Path(
-    "/home/yoyo/projects/TSMC-2026-Hackathon/hackathon-485006-fc9be8263cae.json"
+    ""
 )
 
 
