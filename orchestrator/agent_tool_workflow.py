@@ -242,13 +242,13 @@ def parse_app_config(config_path: Path) -> AppConfig:
 
     architect = LlmConfig(
         model=str(architect_raw.get("model", "qwen/qwen3-next-80b-a3b-thinking-maas")),
-        project=str(architect_raw.get("project", "tsmchaker")),
+        project=str(architect_raw.get("project", "hacker")),
         location=str(architect_raw.get("location", "global")),
         temperature=float(architect_raw.get("temperature", 0.0)),
     )
     engineer = LlmConfig(
         model=str(engineer_raw.get("model", "gemini-2.5-pro")),
-        project=str(engineer_raw.get("project", "tsmchaker")),
+        project=str(engineer_raw.get("project", "hacker")),
         location=str(engineer_raw.get("location", "global")),
         temperature=float(engineer_raw.get("temperature", 0.0)),
     )
